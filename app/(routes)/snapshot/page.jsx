@@ -55,18 +55,25 @@ export default function SnapshotPage() {
             const data = await response.json()
 
             if (!response.ok) {
-                throw new Error(data.error || 'Failed to fetch published projects')
+                // API error (e.g. real DB failure) — show empty state without crashing
+                console.warn('Failed to fetch published projects:', data?.error || response.status)
+                setProjects([])
+                setPagination(null)
+                setLoading(false)
+                return
             }
 
-            setProjects(data.projects)
-            setPagination(data.pagination)
+            setProjects(data.projects || [])
+            setPagination(data.pagination || null)
             setLoading(false)
         } catch (error) {
-            console.error('Error fetching projects:', error)
-            toast.error(`Failed to load projects: ${error.message}`)
+            console.warn('Error fetching projects (network/parse):', error?.message || error)
+            setProjects([])
+            setPagination(null)
             setLoading(false)
         }
     }
+
 
     useEffect(() => {
         fetchPublishedProjects()

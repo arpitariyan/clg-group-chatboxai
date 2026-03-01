@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Trash2, Search, Atom, Calendar, ArrowRight, Filter, X, Sparkles, Image as ImageIcon, Code2, Eye } from 'lucide-react'
+import { Trash2, Search, Atom, Calendar, ArrowRight, Filter, X, Sparkles, Image as ImageIcon, Code2, Eye, AlertTriangle } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import {
     Dialog,
@@ -37,6 +37,7 @@ function Library() {
     const [searchQuery, setSearchQuery] = useState('')
     const [selectedFilter, setSelectedFilter] = useState('all')
     const [customDateRange, setCustomDateRange] = useState({ start: '', end: '' })
+    const [dbError, setDbError] = useState(false)
     const router = useRouter()
 
     const filterOptions = [
@@ -121,32 +122,27 @@ function Library() {
     const GetLibraryHistory = async () => {
         try {
             setLoading(true)
-            
-            // Validate user email
+
             if (!currentUser?.email) {
-                console.error('Error: User email is missing')
                 setLibraryData([])
                 setFilteredData([])
                 return
             }
-            
-            // Fetch Library entries, ImageGeneration entries, and Website Projects
+
+            // Run all 3 queries in parallel — treat each error as non-fatal
             const [libraryResponse, imageGenResponse, websiteProjectsResponse] = await Promise.all([
                 supabase
                     .from('Library')
-                    .select(`
-                        *,
-                        Chats(*)
-                    `)
+                    .select(`*, Chats(*)`)
                     .eq('userEmail', currentUser.email)
                     .order('created_at', { ascending: false }),
-                
+
                 supabase
                     .from('ImageGeneration')
                     .select('*')
                     .eq('userEmail', currentUser.email)
                     .order('created_at', { ascending: false }),
-                
+
                 supabase
                     .from('website_projects')
                     .select('*')
@@ -154,94 +150,111 @@ function Library() {
                     .order('created_at', { ascending: false })
             ]);
 
-            if (libraryResponse.error) {
-                // Enhanced error logging
-                console.error('Error fetching library data:', {
-                    message: libraryResponse.error.message,
-                    details: libraryResponse.error.details,
-                    hint: libraryResponse.error.hint,
-                    code: libraryResponse.error.code,
-                    fullError: JSON.stringify(libraryResponse.error, null, 2),
-                    userEmail: currentUser?.email
-                })
-                
-                // Continue with empty data if library fetch fails, but still try to show image generations
-                if (imageGenResponse.error) {
-                    // Both failed, set empty data
-                    setLibraryData([])
-                    setFilteredData([])
-                    return
-                }
+            // Log non-timeout errors; treat timeout silently
+            const logIfRealError = (label, error) => {
+                if (!error) return;
+                const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
+                if (!isTimeout) console.warn(`[Library] ${label}:`, error.message);
+            };
+
+            logIfRealError('Library query error', libraryResponse.error);
+            logIfRealError('ImageGeneration query error', imageGenResponse.error);
+            logIfRealError('WebsiteProjects query error', websiteProjectsResponse.error);
+
+            const isAnyTimeout = (
+                (libraryResponse.error?.code === 'TIMEOUT' || libraryResponse.error?.message?.includes('timeout')) ||
+                (imageGenResponse.error?.code === 'TIMEOUT' || imageGenResponse.error?.message?.includes('timeout')) ||
+                (websiteProjectsResponse.error?.code === 'TIMEOUT' || websiteProjectsResponse.error?.message?.includes('timeout'))
+            );
+
+            if (isAnyTimeout) {
+                setDbError(true);
+                console.warn('[Library] Supabase is unreachable — project may be paused. Visit https://supabase.com/dashboard to restore it.');
+            } else {
+                setDbError(false);
             }
 
-            if (imageGenResponse.error) {
-                // Enhanced error logging
-                console.error('Error fetching image generation data:', {
-                    message: imageGenResponse.error.message,
-                    details: imageGenResponse.error.details,
-                    hint: imageGenResponse.error.hint,
-                    code: imageGenResponse.error.code,
-                    fullError: JSON.stringify(imageGenResponse.error, null, 2),
-                    userEmail: currentUser?.email
-                })
-            }
-
-            // Combine and format the data
-            // Handle cases where one query might have failed - use empty array if error, otherwise use data
             const libraryDataItems = libraryResponse.error ? [] : (libraryResponse.data || []);
             const imageGenDataItems = imageGenResponse.error ? [] : (imageGenResponse.data || []);
             const websiteProjectsDataItems = websiteProjectsResponse.error ? [] : (websiteProjectsResponse.data || []);
-            
+
             const libraryItems = libraryDataItems.map(item => ({
                 ...item,
-                dataType: 'search', // Add identifier for data type
+                dataType: 'search',
                 title: item.searchInput,
                 subtitle: `${item.type === 'research' ? 'Research' : 'Search'} • ${formatDate(item.created_at)}`
             }));
 
             const imageGenItems = imageGenDataItems.map(item => ({
                 ...item,
-                dataType: 'image-generation', // Add identifier for data type
+                dataType: 'image-generation',
                 title: item.prompt,
                 subtitle: `Image Generation • ${formatDate(item.created_at)}`,
                 type: 'image-generation',
-                searchInput: item.prompt // For consistency with search functionality
+                searchInput: item.prompt
             }));
 
             const websiteProjectItems = websiteProjectsDataItems.map(item => ({
                 ...item,
-                dataType: 'website-builder', // Add identifier for data type
+                dataType: 'website-builder',
                 title: item.title || item.initial_prompt || 'Website Project',
                 subtitle: `Website Builder • ${formatDate(item.created_at)}`,
                 type: 'website-builder',
-                searchInput: item.title || item.initial_prompt, // For search functionality
-                libId: item.id // Use project id as libId for consistency
+                searchInput: item.title || item.initial_prompt,
+                libId: item.id
             }));
 
-            // Combine and sort by date
-            const combinedData = [...libraryItems, ...imageGenItems, ...websiteProjectItems].sort((a, b) => 
-                new Date(b.created_at) - new Date(a.created_at)
-            );
+            let combinedData = [...libraryItems, ...imageGenItems, ...websiteProjectItems];
+
+            // If Supabase returned nothing (DB down), fall back to localStorage searches
+            // ChatBoxAiInput saves each search as `search_${libId}` in localStorage
+            if (libraryItems.length === 0) {
+                try {
+                    const localItems = [];
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key && key.startsWith('search_')) {
+                            try {
+                                const raw = localStorage.getItem(key);
+                                const item = JSON.parse(raw);
+                                // Only show searches belonging to the current user
+                                if (item && (item.userEmail === currentUser.email || item.userEmail === 'anonymous')) {
+                                    localItems.push({
+                                        ...item,
+                                        dataType: 'search',
+                                        title: item.searchInput || '(untitled)',
+                                        subtitle: `${item.type === 'research' ? 'Research' : 'Search'} • (offline)`,
+                                        created_at: item.created_at || new Date().toISOString(),
+                                        Chats: [],
+                                        _fromLocalStorage: true,
+                                    });
+                                }
+                            } catch (_) { /* skip malformed items */ }
+                        }
+                    }
+                    if (localItems.length > 0) {
+                        console.info(`[Library] Supabase unreachable — showing ${localItems.length} item(s) from localStorage`);
+                        combinedData = [...localItems, ...imageGenItems, ...websiteProjectItems];
+                    }
+                } catch (lsErr) {
+                    console.warn('[Library] localStorage fallback failed:', lsErr);
+                }
+            }
+
+            // Sort by date (newest first)
+            combinedData.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
             setLibraryData(combinedData)
             setFilteredData(combinedData)
         } catch (error) {
-            // Enhanced error logging for unexpected errors
-            console.error('Error in GetLibraryHistory:', {
-                message: error.message,
-                stack: error.stack,
-                name: error.name,
-                userEmail: currentUser?.email,
-                fullError: JSON.stringify(error, Object.getOwnPropertyNames(error), 2)
-            })
-            
-            // Set empty data on error to prevent UI issues
+            console.error('[Library] Unexpected error in GetLibraryHistory:', error?.message || error)
             setLibraryData([])
             setFilteredData([])
         } finally {
             setLoading(false)
         }
     }
+
 
     const handleDelete = async (libId, dataType) => {
         try {
@@ -448,6 +461,27 @@ function Library() {
                         {searchQuery && ` matching "${searchQuery}"`}
                     </p>
                 </div>
+
+                {/* Database Error Banner */}
+                {dbError && (
+                    <div className="flex items-center gap-3 mb-4 p-4 rounded-lg border border-yellow-400/50 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-800 dark:text-yellow-300 shrink-0">
+                        <AlertTriangle className="w-5 h-5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm">Database Temporarily Unavailable</p>
+                            <p className="text-xs mt-0.5 opacity-80">
+                                Cannot connect to Supabase. Your data still exists — the database may be paused.{' '}
+                                <a
+                                    href="https://supabase.com/dashboard"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="underline font-medium"
+                                >
+                                    Resume your project →
+                                </a>
+                            </p>
+                        </div>
+                    </div>
+                )}
 
                 {/* Search and Filter Controls */}
                 <div className="flex flex-col sm:flex-row gap-3 mb-6 shrink-0">

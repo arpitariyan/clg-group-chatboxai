@@ -1,11 +1,6 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { getAuth } from '@clerk/nextjs/server'
-
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-)
+import { supabaseAdmin as supabase } from '@/services/supabase-admin'
 
 export async function POST(request) {
     try {

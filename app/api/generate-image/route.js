@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/services/supabase';
+import { supabaseAdmin } from '@/services/supabase-admin';
 import { v4 as uuidv4 } from 'uuid';
 import OpenAI from 'openai';
 import { checkImageGenerationLimit } from '@/lib/planUtils';
@@ -460,8 +461,8 @@ export async function POST(request) {
             : `a4f_${selectedModel.replace('/', '_')}_${generationId}_${targetWidth}x${targetHeight}_${Date.now()}.png`;
         const filePath = `generated-images/${fileName}`;
 
-        // Upload the processed image to Supabase Storage
-        const { data: uploadData, error: uploadError } = await supabase.storage
+        // Upload the processed image to Supabase Storage (admin client bypasses RLS)
+        const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
             .from('mainStorage')
             .upload(filePath, processedImageBuffer, {
                 contentType: 'image/png',
@@ -475,7 +476,7 @@ export async function POST(request) {
         }
 
         // Get public URL from Supabase
-        const { data: { publicUrl } } = supabase.storage
+        const { data: { publicUrl } } = supabaseAdmin.storage
             .from('mainStorage')
             .getPublicUrl(filePath);
 

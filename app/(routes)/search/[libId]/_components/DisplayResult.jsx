@@ -253,38 +253,31 @@ function DisplayResult({ searchInputRecord }) {
         return null;
     }, [ALLOWED_FILE_TYPES, MAX_FILE_SIZE]);
 
-    // OPTIMIZATION: Memoized upload function to prevent recreation
+    // OPTIMIZATION: Memoized upload function — routes through /api/upload-file to bypass storage RLS
     const uploadFileToStorage = useCallback(async (file) => {
         try {
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${uuidv4()}.${fileExt}`;
-            const filePath = `uploads/${currentUser?.uid || 'anonymous'}/${fileName}`;
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('userId', currentUser?.uid || 'anonymous');
 
-            // Upload file to mainStorage bucket
-            const { data, error } = await supabase.storage
-                .from('mainStorage')
-                .upload(filePath, file, {
-                    cacheControl: '3600',
-                    upsert: false
-                });
+            const response = await fetch('/api/upload-file', {
+                method: 'POST',
+                body: formData,
+            });
 
-            if (error) {
-                throw error;
+            const result = await response.json();
+
+            if (!response.ok || result.error) {
+                throw new Error(result.error || 'Upload failed');
             }
 
-            // Get public URL
-            const { data: { publicUrl } } = supabase.storage
-                .from('mainStorage')
-                .getPublicUrl(filePath);
-
             return {
-                path: filePath,
-                publicUrl,
-                fileName: file.name,
-                fileType: file.type,
-                fileSize: file.size
+                path: result.path,
+                publicUrl: result.publicUrl,
+                fileName: result.fileName,
+                fileType: result.fileType,
+                fileSize: result.fileSize,
             };
-
         } catch (error) {
             console.error('Error uploading file:', error);
             throw new Error(`Failed to upload ${file.name}: ${error.message}`);
@@ -414,21 +407,22 @@ function DisplayResult({ searchInputRecord }) {
         isDragReject
     } = useDropzone(dropzoneConfig);
 
-    // OPTIMIZATION: Memoized remove file function
+    // OPTIMIZATION: Memoized remove file function — routes through /api/upload-file to bypass storage RLS
     const removeFile = useCallback((fileId) => {
         const handleRemoveFile = async () => {
             const fileToRemove = uploadedFiles.find(f => f.id === fileId);
             if (fileToRemove?.uploadResult?.path) {
                 try {
-                    // Delete from storage
-                    await supabase.storage
-                        .from('mainStorage')
-                        .remove([fileToRemove.uploadResult.path]);
+                    await fetch('/api/upload-file', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: fileToRemove.uploadResult.path }),
+                    });
                 } catch (error) {
                     console.error('Error deleting file:', error);
                 }
             }
-            
+
             setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
         };
 

@@ -34,6 +34,25 @@ export const useSubscription = (userEmail) => {
       return;
     }
 
+    // Owner account — return hardcoded permanent-pro data, no DB calls needed
+    if (userEmail === 'arpitariyanm@gmail.com') {
+      setSubscriptionData({
+        planInfo: { isPro: true, plan: 'pro', isExpired: false, expiresAt: null, subscription: null },
+        details: { hasSubscription: false, isActive: true, startDate: null, endDate: null, daysRemaining: null },
+        statusMessage: 'Pro Plan (Permanent Account)',
+        effectivePlan: 'pro',
+        isActive: true,
+        isPro: true,
+        monthlyCredits: 25000,
+        monthlyPrice: 299,
+        currency: 'INR',
+        loading: false,
+        error: null
+      });
+      return;
+    }
+
+
     try {
       setSubscriptionData(prev => ({ ...prev, loading: true, error: null }));
 
@@ -96,7 +115,7 @@ export const useSubscription = (userEmail) => {
  */
 export const useUpgradePrompts = (userEmail) => {
   const subscription = useSubscription(userEmail);
-  
+
   return {
     shouldShowTryPro: !subscription.isPro && !subscription.loading,
     shouldShowUpgradeButton: !subscription.isPro && !subscription.loading,

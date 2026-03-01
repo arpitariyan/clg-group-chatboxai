@@ -17,31 +17,31 @@ import { useAuth } from '@/contexts/AuthContext'
 import { v4 as uuidv4 } from 'uuid'
 
 const IMAGE_MODELS = [
-    {
-        id: "chatboxai",
-        name: "ChatBoxAI v1.0",
-        desc: "Your custom ChatBoxAI model - high-quality image generation",
-        isFeatured: true
-    },
+    // {
+    //     id: "chatboxai",
+    //     name: "ChatBoxAI v1.0",
+    //     desc: "Your custom ChatBoxAI model - high-quality image generation",
+    //     isFeatured: true
+    // },
     {
         id: "provider-4/imagen-4",
         name: "Imagen 4",
         desc: "Google's latest high-quality image generation model"
     },
     {
-        id: "provider-4/flux-schnell",
+        id: "provider-2/flux-schnell",
         name: "Flux Schnell",
         desc: "Fast and efficient image generation model"
     },
     {
-        id: "provider-5/dall-e-2",
-        name: "DALL-E 2",
-        desc: "OpenAI's powerful image generation model"
+        id: "provider-4/z-image-turbo",
+        name: "Z-Image Turbo",
+        desc: "Z-Image Turbo is a text-to-image model that can generate high-quality images from text prompts."
     },
     {
-        id: "provider-4/qwen-image",
-        name: "Qwen Image",
-        desc: "Alibaba's advanced image generation model"
+        id: "provider-4/flux-2-klein-9b",
+        name: "Flux 2 Klein 9B",
+        desc: "Flux 2 Klein 9B is a text-to-image model that can generate high-quality images from text prompts."
     }
 ]
 

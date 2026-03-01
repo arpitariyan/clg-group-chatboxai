@@ -41,6 +41,21 @@ export async function GET(request) {
             .range(from, to);
 
         if (projectsError) {
+            const isTimeout = projectsError.code === 'TIMEOUT' ||
+                projectsError.message?.includes('timeout') ||
+                projectsError.message?.includes('fetch failed');
+
+            if (isTimeout) {
+                // Supabase unreachable — return empty list gracefully instead of 500
+                console.warn('[published] Supabase unreachable, returning empty projects');
+                return NextResponse.json({
+                    success: true,
+                    projects: [],
+                    pagination: { page, limit, total: 0, totalPages: 0 },
+                    dbUnavailable: true
+                });
+            }
+
             console.error('Error fetching published projects:', projectsError);
             return NextResponse.json(
                 { error: 'Failed to fetch published projects', details: projectsError.message },

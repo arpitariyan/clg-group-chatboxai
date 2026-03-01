@@ -741,7 +741,6 @@ function ChatBoxAiInput() {
     const onSearchQuery = () => {
         const handleSearchQuery = async () => {
             if (loading || (!userSearchInput && uploadedFiles.length === 0)) {
-                console.warn('Search query blocked: loading =', loading, ', userSearchInput =', userSearchInput, ', uploadedFiles.length =', uploadedFiles.length);
                 return; // Prevent double submission
             }
 
@@ -793,65 +792,47 @@ function ChatBoxAiInput() {
                     modelName: selectedModel?.name || 'Gemini 2.0 Flash'
                 };
 
-                // Store file paths in localStorage as backup for immediate use
+                // ALWAYS store in localStorage first — this is the primary fallback
+                // so navigation works even when Supabase is unreachable.
+                localStorage.setItem(`search_${libId}`, JSON.stringify(libraryData));
                 if (filePaths.length > 0) {
                     localStorage.setItem(`files_${libId}`, JSON.stringify(filePaths));
-                    // console.log('Stored files in localStorage for libId:', libId);
+                    libraryData.uploadedFiles = filePaths;
                 }
 
-                // Try to add uploadedFiles column
-                if (filePaths.length > 0) {
-                    try {
-                        libraryData.uploadedFiles = filePaths;
-                    } catch (error) {
-                        console.warn('uploadedFiles column may not exist yet, storing in localStorage');
-                    }
-                }
-
-                // console.log('Inserting library data:', libraryData);
-
-                // Insert to Library table
-                let insertResult;
+                // Try to insert into the Library table as best-effort.
+                // If Supabase is down (TIMEOUT) we silently skip it and navigate anyway.
                 try {
                     const { data, error } = await supabase.from('Library').insert([libraryData]).select();
-                    
+
                     if (error) {
-                        console.error('Primary database insert error:', error);
-                        // If the error is about uploadedFiles column, try without it
-                        if (error.message.includes('uploadedFiles') || error.message.includes('column')) {
-                            // console.log('Retrying without uploadedFiles column...');
-                            const { uploadedFiles, ...libraryDataWithoutFiles } = libraryData;
-                            const { data: retryData, error: retryError } = await supabase
+                        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed') || error.message?.includes('aborted');
+                        if (isTimeout) {
+                            // DB is unreachable — localStorage fallback will be used on the search page
+                            console.warn('[ChatBoxAi] Supabase unreachable, using localStorage fallback for libId:', libId);
+                        } else if (error.message?.includes('uploadedFiles') || error.message?.includes('column')) {
+                            // Column doesn't exist — retry without uploadedFiles
+                            const { uploadedFiles: _files, ...libraryDataWithoutFiles } = libraryData;
+                            const { error: retryError } = await supabase
                                 .from('Library')
                                 .insert([libraryDataWithoutFiles])
                                 .select();
-
                             if (retryError) {
-                                console.error('Retry database insert error:', retryError);
-                                throw retryError;
+                                console.warn('[ChatBoxAi] Library insert retry failed:', retryError.message);
                             }
-                            insertResult = retryData;
-                            // console.log('Successfully inserted without uploadedFiles column');
                         } else {
-                            throw error;
+                            console.warn('[ChatBoxAi] Library insert failed (non-fatal):', error.message);
                         }
-                    } else {
-                        insertResult = data;
-                        // console.log('Successfully inserted with all data');
                     }
+                    // If data is returned (success) all is good; localStorage still has the backup
                 } catch (dbError) {
-                    console.error('Database insertion failed completely:', dbError);
-                    toast.error('Failed to save search data. Please try again.');
-                    throw dbError;
+                    // Any unexpected throw from Supabase — treat as non-fatal
+                    console.warn('[ChatBoxAi] Library insert threw (non-fatal):', dbError?.message || dbError);
                 }
 
-                if (!insertResult || insertResult.length === 0) {
-                    throw new Error('No data returned from database insertion');
-                }
-
+                // Navigate regardless — the search page will use localStorage if DB record is missing
                 setUserSearchInput('');
                 setUploadedFiles([]);
-
                 router.push('/search/' + libId);
 
             } catch (error) {
@@ -864,6 +845,7 @@ function ChatBoxAiInput() {
 
         handleSearchQuery();
     }
+
 
     const onImageGeneration = () => {
         const handleImageGeneration = async () => {

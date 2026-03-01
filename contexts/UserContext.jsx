@@ -40,12 +40,32 @@ export const UserProvider = ({ children }) => {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [dbError, setDbError] = useState(false); // true when Supabase is unreachable
 
-  // Fetch user data from Supabase
   const fetchUserData = async (user) => {
     if (!user) {
       setUserData(null);
       setLoading(false);
+      return;
+    }
+
+    // Owner account — skip all Supabase queries, use hardcoded pro profile
+    if (user.email === 'arpitariyanm@gmail.com') {
+      setDbError(false);
+      setUserData({
+        email: 'arpitariyanm@gmail.com',
+        name: user.displayName || 'Arpit',
+        plan: 'pro',
+        credits: 25000,
+        mfa_enabled: false,
+        accent_color: 'violet',
+        language: 'en',
+        subscription_start_date: null,
+        subscription_end_date: null,
+        last_monthly_reset: null,
+      });
+      setLoading(false);
+      setRefreshing(false);
       return;
     }
 
@@ -60,7 +80,17 @@ export const UserProvider = ({ children }) => {
         .single();
 
       if (error && error.code !== 'PGRST116') {
-        throw error;
+        // Network/connection errors (e.g. Supabase paused or timeout) — handle gracefully
+        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
+        console.error('Error fetching user from Supabase:', error?.message || JSON.stringify(error));
+        if (isTimeout) {
+          console.warn('[UserContext] Supabase is unreachable (timeout). Check if your Supabase project is paused at https://supabase.com/dashboard');
+          setDbError(true);
+        }
+        setUserData(null);
+        setLoading(false);
+        setRefreshing(false);
+        return;
       }
 
       // If user doesn't exist, create them
@@ -68,8 +98,8 @@ export const UserProvider = ({ children }) => {
         const newUser = {
           email: user.email,
           name: user.displayName || getUserNameFromEmail(user.email),
-          plan: user.email === 'arpitariyanm@gmail.com' ? 'pro' : 'free',
-          credits: user.email === 'arpitariyanm@gmail.com' ? 25000 : 5000,
+          plan: 'free',
+          credits: 5000,
           last_monthly_reset: new Date().toISOString().split('T')[0],
           mfa_enabled: false,
           accent_color: 'violet',
@@ -84,28 +114,13 @@ export const UserProvider = ({ children }) => {
 
         if (createError) throw createError;
         existingUser = createdUser;
-      } else {
-        // Check if it's arpitariyanm@gmail.com and ensure Pro status
-        if (user.email === 'arpitariyanm@gmail.com' && existingUser.plan !== 'pro') {
-          const { data: updatedUser, error: updateError } = await supabase
-            .from('Users')
-            .update({
-              plan: 'pro',
-              credits: 25000,
-              last_monthly_reset: new Date().toISOString().split('T')[0]
-            })
-            .eq('email', user.email)
-            .select()
-            .single();
-
-          if (updateError) throw updateError;
-          existingUser = updatedUser;
-        }
       }
 
       setUserData(existingUser);
     } catch (error) {
       if (error && error.message) {
+        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
+        if (isTimeout) setDbError(true);
         console.error('Error fetching user data:', error);
       }
       setUserData(null);
@@ -115,9 +130,17 @@ export const UserProvider = ({ children }) => {
     }
   };
 
+
   // Update user data
   const updateUserData = async (updates) => {
     if (!currentUser || !userData) return null;
+
+    // Owner account — update state in memory only, never touch Supabase
+    if (currentUser.email === 'arpitariyanm@gmail.com') {
+      const updated = { ...userData, ...updates };
+      setUserData(updated);
+      return updated;
+    }
 
     try {
       const { data: updatedUser, error } = await supabase
@@ -127,13 +150,26 @@ export const UserProvider = ({ children }) => {
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
+        if (isTimeout) {
+          // Supabase unreachable — apply update optimistically in memory
+          console.warn('[UserContext] Supabase unreachable in updateUserData, applying update locally');
+          const updated = { ...userData, ...updates };
+          setUserData(updated);
+          return updated;
+        }
+        throw error;
+      }
 
       setUserData(updatedUser);
       return updatedUser;
     } catch (error) {
-      console.error('Error updating user data:', error);
-      throw error;
+      console.warn('[UserContext] Error updating user data (non-fatal):', error?.message || error);
+      // Apply update optimistically so the UI stays consistent
+      const updated = { ...userData, ...updates };
+      setUserData(updated);
+      return updated;
     }
   };
 
@@ -160,7 +196,12 @@ export const UserProvider = ({ children }) => {
   const checkMonthlyReset = async () => {
     if (!userData) return;
 
+    // Skip if last_monthly_reset is missing/invalid (avoids 1970 false-trigger)
+    if (!userData.last_monthly_reset) return;
+
     const lastReset = new Date(userData.last_monthly_reset);
+    if (isNaN(lastReset.getTime())) return; // Unparseable date — skip
+
     const now = new Date();
     const daysDiff = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
 
@@ -197,6 +238,7 @@ export const UserProvider = ({ children }) => {
     userData,
     loading,
     refreshing,
+    dbError,
     updateUserData,
     refreshUserData,
     consumeCredits,

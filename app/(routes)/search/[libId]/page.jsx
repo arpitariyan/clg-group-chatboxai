@@ -17,8 +17,6 @@ function SearchQueryResult() {
     useEffect(() => {
         const GetSearchQueryRecord = async () => {
             try {
-                // This query fetches Library records and their related Chats
-                // Chats(*) means: fetch ALL columns from the related Chats table
                 let { data: Library, error } = await supabase
                     .from('Library')
                     .select(`
@@ -28,19 +26,33 @@ function SearchQueryResult() {
                     .eq('libId', libId)
 
                 if (error) {
-                    console.error('Error fetching data:', error);
-                    return;
+                    console.warn('Error fetching Library from DB, trying localStorage:', error?.message);
                 }
 
-                // console.log(Library[0]);
-                setSearchInputRecord(Library[0]);
+                let record = Library?.[0];
 
-                // Set the search data in a global way that the header can access
-                if (typeof window !== 'undefined' && Library[0]) {
-                    window.searchInputRecord = Library[0];
-                    // Dispatch a custom event to notify the header
+                // Fallback: if the DB record is missing (Supabase down/timed out),
+                // read the data that ChatBoxAiInput saved in localStorage
+                if (!record) {
+                    try {
+                        const local = localStorage.getItem(`search_${libId}`);
+                        if (local) {
+                            record = { ...JSON.parse(local), Chats: [] };
+                            console.info('[SearchPage] Using localStorage fallback for libId:', libId);
+                        }
+                    } catch (lsErr) {
+                        console.warn('localStorage fallback parse error:', lsErr);
+                    }
+                }
+
+                if (!record) return;
+
+                setSearchInputRecord(record);
+
+                if (typeof window !== 'undefined') {
+                    window.searchInputRecord = record;
                     window.dispatchEvent(new CustomEvent('searchDataUpdated', {
-                        detail: Library[0]
+                        detail: record
                     }));
                 }
             } catch (error) {
@@ -49,7 +61,8 @@ function SearchQueryResult() {
         };
 
         GetSearchQueryRecord();
-    }, [libId]) // Added libId as dependency
+    }, [libId])
+
 
     return (
         <div className="h-full">
