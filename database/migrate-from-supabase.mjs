@@ -318,13 +318,13 @@ async function importCollection(config) {
   const { collectionId, key } = config;
 
   if (!collectionId) {
-    console.log(`  ⚠  Skipping ${key} — collection ID env var not set`);
+    // console.log(`  ⚠  Skipping ${key} — collection ID env var not set`);
     return;
   }
 
   const resolved = resolveCsvPath(config.fileCandidates);
   if (!resolved) {
-    console.log(`  ⚠  Skipping ${key} — CSV file not found (${(config.fileCandidates || []).join(', ')})`);
+    // console.log(`  ⚠  Skipping ${key} — CSV file not found (${(config.fileCandidates || []).join(', ')})`);
     return;
   }
 
@@ -344,7 +344,7 @@ async function importCollection(config) {
     return;
   }
 
-  console.log(`\n→ ${fileName}  (${rows.length} rows)  →  [${collectionId}]`);
+  // console.log(`\n→ ${fileName}  (${rows.length} rows)  →  [${collectionId}]`);
 
   let success = 0;
   let failed = 0;
@@ -364,7 +364,7 @@ async function importCollection(config) {
     if (DRY_RUN) {
       success++;
       if (success % 200 === 0) {
-        console.log(`   ${success} / ${rows.length} validated...`);
+        // console.log(`   ${success} / ${rows.length} validated...`);
       }
       continue;
     }
@@ -373,7 +373,7 @@ async function importCollection(config) {
       await db.createDocument(DB_ID, collectionId, ID.unique(), data);
       success++;
       if (success % 50 === 0) {
-        console.log(`   ${success} / ${rows.length} imported...`);
+        // console.log(`   ${success} / ${rows.length} imported...`);
       }
     } catch (err) {
       failed++;
@@ -384,18 +384,18 @@ async function importCollection(config) {
   }
 
   const status = failed === 0 ? '✅' : '⚠';
-  console.log(`   ${status}  ${success} imported, ${failed} failed`);
+  // console.log(`   ${status}  ${success} imported, ${failed} failed`);
 }
 
 async function main() {
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`  Supabase → Appwrite ${DRY_RUN ? 'Validation (Dry Run)' : 'Data Migration'}`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`  Endpoint : ${process.env.APPWRITE_ENDPOINT}`);
-  console.log(`  Project  : ${process.env.APPWRITE_PROJECT_ID}`);
-  console.log(`  Database : ${DB_ID}`);
-  console.log(`  CSV dir  : ${CSV_DIR}`);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+  // console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // console.log(`  Supabase → Appwrite ${DRY_RUN ? 'Validation (Dry Run)' : 'Data Migration'}`);
+  // console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // console.log(`  Endpoint : ${process.env.APPWRITE_ENDPOINT}`);
+  // console.log(`  Project  : ${process.env.APPWRITE_PROJECT_ID}`);
+  // console.log(`  Database : ${DB_ID}`);
+  // console.log(`  CSV dir  : ${CSV_DIR}`);
+  // console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   if (!process.env.APPWRITE_PROJECT_ID || !process.env.APPWRITE_API_KEY || !DB_ID) {
     console.error('ERROR: APPWRITE_PROJECT_ID, APPWRITE_API_KEY, and APPWRITE_DATABASE_ID must be set in .env');
@@ -406,9 +406,9 @@ async function main() {
     await importCollection(config);
   }
 
-  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('  Migration complete!');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  // console.log('  Migration complete!');
+  // console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 }
 
 main().catch(err => {

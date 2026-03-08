@@ -1095,7 +1095,7 @@ Provide a well-structured, informative response.`;
             } else if (actualModel.provider === 'a4f' || actualModel.provider?.startsWith('provider-')) {
               // Try A4F with automatic fallback to Gemini on failure
               try {
-                console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
+                // console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
                 return await callA4F(actualModel.modelApi, directPrompt);
               } catch (a4fError) {
                 console.warn(`⚠️ A4F model ${actualModel.modelApi} failed, falling back to Google Gemini:`, a4fError.message);
@@ -1162,7 +1162,7 @@ Please summarize and provide detailed information about the topic in markdown fo
             } else if (actualModel.provider && actualModel.provider.startsWith('provider-')) {
               // Try A4F with automatic fallback to Gemini on failure
               try {
-                console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
+                // console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
                 return await callA4F(actualModel.modelApi, prompt);
               } catch (a4fError) {
                 console.warn(`⚠️ A4F model ${actualModel.modelApi} failed, falling back to Google Gemini:`, a4fError.message);

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, HelpCircle } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { fadeInUp, staggerContainer, useInView } from '@/lib/animations';
 
 const faqs = [
@@ -12,15 +12,15 @@ const faqs = [
   },
   {
     question: 'How does the free plan work?',
-    answer: 'The free plan gives you access to basic AI models like GPT-3.5 Turbo with 50 messages per day, 10 image generations per day, and 7-day conversation history. It\'s perfect for trying out the platform and basic usage without any cost.',
+    answer: "The free plan gives you access to basic AI models like GPT-3.5 Turbo with 50 messages per day, 10 image generations per day, and 7-day conversation history. It's perfect for trying out the platform and basic usage without any cost.",
   },
   {
-    question: 'What\'s included in the Pro plan?',
+    question: "What's included in the Pro plan?",
     answer: 'The Pro plan unlocks unlimited access to all premium AI models (GPT-4, Claude 3, Gemini Pro), unlimited messages and image generation, advanced features like website builder and voice AI, file upload and analysis, priority support, and unlimited conversation history.',
   },
   {
     question: 'Can I upgrade or downgrade my plan?',
-    answer: 'Yes! You can upgrade to Pro at any time to unlock premium features. If you downgrade from Pro to Free, you\'ll retain access to Pro features until the end of your billing period, then automatically switch to Free plan limits.',
+    answer: "Yes! You can upgrade to Pro at any time to unlock premium features. If you downgrade from Pro to Free, you'll retain access to Pro features until the end of your billing period, then automatically switch to Free plan limits.",
   },
   {
     question: 'Which AI models do you support?',
@@ -28,7 +28,7 @@ const faqs = [
   },
   {
     question: 'Is my data secure and private?',
-    answer: 'Absolutely! We take security seriously. All conversations are encrypted, your data is stored securely, and we never share your information with third parties. We\'re GDPR compliant and follow industry-best practices for data protection.',
+    answer: "Absolutely! We take security seriously. All conversations are encrypted, your data is stored securely, and we never share your information with third parties. We're GDPR compliant and follow industry-best practices for data protection.",
   },
   {
     question: 'Can I use ChatBox AI for coding?',
@@ -36,7 +36,7 @@ const faqs = [
   },
   {
     question: 'How do I cancel my subscription?',
-    answer: 'You can cancel your Pro subscription anytime from your account settings. Once canceled, you\'ll continue to have Pro access until the end of your billing period, after which you\'ll automatically move to the free plan.',
+    answer: "You can cancel your Pro subscription anytime from your account settings. Once canceled, you'll continue to have Pro access until the end of your billing period, after which you'll automatically move to the free plan.",
   },
 ];
 
@@ -49,71 +49,71 @@ export default function FAQSection() {
   };
 
   return (
-    <section 
-      ref={ref}
-      className="section-padding bg-gray-50/50 dark:bg-gray-900/50"
-    >
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+    <section ref={ref} className="section-padding bg-[#0a0a0f] relative overflow-hidden">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
         {/* Section Header */}
-        <motion.div 
+        <motion.div
           initial="hidden"
-          animate={isInView ? "visible" : "hidden"}
+          animate={isInView ? 'visible' : 'hidden'}
           variants={staggerContainer}
           className="text-center mb-16"
         >
-          <motion.h2 
-            variants={fadeInUp}
-            className="landing-heading-lg text-gray-900 dark:text-white mb-6"
-          >
+          <motion.div variants={fadeInUp} className="inline-flex items-center gap-2 bg-white/[0.04] border border-white/[0.08] rounded-full px-4 py-1.5 mb-6">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">FAQ</span>
+          </motion.div>
+          <motion.h2 variants={fadeInUp} className="landing-heading-lg text-white mb-5">
             Common questions
           </motion.h2>
-          <motion.p 
-            variants={fadeInUp}
-            className="landing-body-lg text-gray-600 dark:text-gray-400"
-          >
+          <motion.p variants={fadeInUp} className="text-lg text-gray-500">
             Everything you need to know
           </motion.p>
         </motion.div>
 
         {/* FAQ Accordion */}
-        <motion.div 
+        <motion.div
           initial="hidden"
-          animate={isInView ? "visible" : "hidden"}
+          animate={isInView ? 'visible' : 'hidden'}
           variants={staggerContainer}
-          className="space-y-3"
+          className="space-y-2"
         >
           {faqs.map((faq, index) => (
             <motion.div
               key={index}
               custom={index}
               variants={fadeInUp}
-              className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden"
+              className={`rounded-xl border transition-all duration-300 overflow-hidden ${
+                openIndex === index
+                  ? 'bg-white/[0.04] border-violet-500/20'
+                  : 'bg-white/[0.02] border-white/[0.06] hover:border-white/[0.10]'
+              }`}
             >
               <button
                 onClick={() => toggleQuestion(index)}
-                className="w-full px-6 py-5 flex items-center justify-between text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors focus-minimal"
+                className="w-full px-6 py-5 flex items-start justify-between text-left focus-minimal group"
               >
-                <span className="font-semibold text-gray-900 dark:text-white pr-4 text-base">
+                <span className="font-medium text-white pr-4 text-sm leading-relaxed mt-0.5 group-hover:text-violet-200 transition-colors">
                   {faq.question}
                 </span>
-                <ChevronDown
-                  className={`w-5 h-5 text-gray-400 dark:text-gray-600 shrink-0 transition-transform duration-300 ${
-                    openIndex === index ? 'rotate-180 text-violet-600 dark:text-violet-400' : ''
-                  }`}
-                />
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 transition-all duration-300 ${
+                  openIndex === index 
+                    ? 'bg-violet-500/20 text-violet-400 rotate-45' 
+                    : 'bg-white/[0.04] text-gray-500 group-hover:bg-white/[0.08] group-hover:text-white'
+                }`}>
+                  <Plus className="w-3.5 h-3.5" />
+                </div>
               </button>
-              
+
               <AnimatePresence>
                 {openIndex === index && (
                   <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.3, ease: 'easeInOut' }}
+                    transition={{ duration: 0.25, ease: 'easeInOut' }}
                     className="overflow-hidden"
                   >
-                    <div className="px-6 pb-5 border-t border-gray-100 dark:border-gray-800 pt-4">
-                      <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
+                    <div className="px-6 pb-5 pt-0 border-t border-white/[0.06]">
+                      <p className="text-sm text-gray-500 leading-relaxed pt-4">
                         {faq.answer}
                       </p>
                     </div>
@@ -124,32 +124,21 @@ export default function FAQSection() {
           ))}
         </motion.div>
 
-        {/* Additional Help Card */}
-        {/* <motion.div
+        {/* Help Link */}
+        <motion.div
           initial="hidden"
-          animate={isInView ? "visible" : "hidden"}
+          animate={isInView ? 'visible' : 'hidden'}
           variants={fadeInUp}
-          className="mt-12 text-center"
+          className="text-center mt-10"
         >
-          <div className="inline-block bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-2xl p-8">
-            <HelpCircle className="w-12 h-12 text-violet-600 dark:text-violet-400 mx-auto mb-4" />
-            <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-              Still have questions?
-            </h3>
-            <p className="text-gray-600 dark:text-gray-400 mb-4">
-              Our support team is here to help
-            </p>
-            <a
-              href="/help-center"
-              className="inline-flex items-center text-violet-600 dark:text-violet-400 hover:underline font-medium"
-            >
-              Visit Help Center
-              <ChevronDown className="w-4 h-4 ml-1 -rotate-90" />
+          <p className="text-sm text-gray-600">
+            Still have questions?{' '}
+            <a href="/help-center" className="text-violet-400 hover:text-violet-300 transition-colors font-medium">
+              Visit our Help Center →
             </a>
-          </div>
-        </motion.div> */}
+          </p>
+        </motion.div>
       </div>
     </section>
   );
 }
-

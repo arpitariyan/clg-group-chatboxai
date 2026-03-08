@@ -37,7 +37,7 @@ export async function POST(req) {
         // If model is Auto or missing, select a random model based on plan
         if (!selectedModel || selectedModel.modelApi === 'auto' || selectedModel.id === 1) {
             finalSelectedModel = getRandomModel(isPro === true);
-            console.log(`Auto model selected: ${finalSelectedModel.name} (${finalSelectedModel.modelApi}) for ${isPro ? 'Pro' : 'Free'} user`);
+            // console.log(`Auto model selected: ${finalSelectedModel.name} (${finalSelectedModel.modelApi}) for ${isPro ? 'Pro' : 'Free'} user`);
         }
 
         // Validate selectedModel

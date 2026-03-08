@@ -41,21 +41,21 @@ export async function POST(req) {
         }
 
         // Check if Inngest is configured
-        const inngestHost = process.env.INNGEST_SERVER_HOST || 'https://inn.gs';
-        const inngestKey = process.env.INNGEST_SIGNING_KEY;
+        const inngestHost = process.env.INNGEST_SERVER_HOST || 'https://api.inngest.com';
+        const inngestApiKey = process.env.INNGEST_API_KEY || process.env.INNGEST_SIGNING_KEY;
         const inngestEventKey = process.env.INNGEST_EVENT_KEY;
         
         // console.log('Inngest configuration:', {
         //     hasHost: !!inngestHost,
-        //     hasSigningKey: !!inngestKey,
+        //     hasApiKey: !!inngestApiKey,
         //     hasEventKey: !!inngestEventKey,
         //     host: inngestHost
         // });
         
-        if (!inngestKey && !inngestEventKey) {
+        if (!inngestApiKey && !inngestEventKey) {
             console.error('Inngest authentication not configured');
             return NextResponse.json(
-                { error: 'Inngest authentication not configured. Set INNGEST_SIGNING_KEY or INNGEST_EVENT_KEY.' }, 
+                { error: 'Inngest authentication not configured. Set INNGEST_API_KEY, INNGEST_SIGNING_KEY or INNGEST_EVENT_KEY.' }, 
                 { status: 500 }
             );
         }
@@ -78,16 +78,16 @@ export async function POST(req) {
                     'Content-Type': 'application/json'
                 };
                 
-                // Use either signing key or event key for authentication
-                if (inngestKey) {
-                    headers['Authorization'] = `Bearer ${inngestKey}`;
+                // Use either API key (preferred for REST API) or event key
+                if (inngestApiKey) {
+                    headers['Authorization'] = `Bearer ${inngestApiKey}`;
                 } else if (inngestEventKey) {
                     headers['X-Inngest-Event-Key'] = inngestEventKey;
                 }
 
                 const result = await axios.get(`${inngestHost}${endpoint}`, {
                     headers: headers,
-                    timeout: 10000 // 10 second timeout
+                    timeout: 5000 // 5 second timeout
                 });
 
                 // console.log('Successfully fetched status from endpoint:', endpoint);
@@ -179,11 +179,11 @@ export async function GET(req) {
         }
 
         // Check if Inngest is configured
-        const inngestHost = process.env.INNGEST_SERVER_HOST || 'https://inn.gs';
-        const inngestKey = process.env.INNGEST_SIGNING_KEY;
+        const inngestHost = process.env.INNGEST_SERVER_HOST || 'https://api.inngest.com';
+        const inngestApiKey = process.env.INNGEST_API_KEY || process.env.INNGEST_SIGNING_KEY;
         const inngestEventKey = process.env.INNGEST_EVENT_KEY;
         
-        if (!inngestKey && !inngestEventKey) {
+        if (!inngestApiKey && !inngestEventKey) {
             return NextResponse.json(
                 { error: 'Inngest authentication not configured' }, 
                 { status: 500 }
@@ -206,15 +206,15 @@ export async function GET(req) {
                     'Content-Type': 'application/json'
                 };
                 
-                if (inngestKey) {
-                    headers['Authorization'] = `Bearer ${inngestKey}`;
+                if (inngestApiKey) {
+                    headers['Authorization'] = `Bearer ${inngestApiKey}`;
                 } else if (inngestEventKey) {
                     headers['X-Inngest-Key'] = inngestEventKey;
                 }
 
                 const response = await axios.get(
                     `${inngestHost}${endpoint}`,
-                    { headers, timeout: 10000 }
+                    { headers, timeout: 5000 }
                 );
 
                 if (response.status === 200 && response.data) {

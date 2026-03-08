@@ -79,7 +79,7 @@ export async function DELETE(request) {
       await databases.deleteDocument(DB_ID, USERS_COLLECTION_ID, user.$id);
 
       // Log the deletion for audit purposes
-      console.log(`Account deleted: ${email} (ID: ${user.$id})`);
+      // console.log(`Account deleted: ${email} (ID: ${user.$id})`);
       return NextResponse.json({
         success: true,
         message: 'Account successfully deleted',

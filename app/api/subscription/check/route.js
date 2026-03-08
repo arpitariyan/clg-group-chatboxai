@@ -4,7 +4,7 @@ import { inngest } from '@/inngest/client';
 // This endpoint allows manual triggering of subscription expiry checks for testing
 export async function POST(request) {
   try {
-    console.log('=== MANUAL SUBSCRIPTION CHECK TRIGGER ===');
+    // console.log('=== MANUAL SUBSCRIPTION CHECK TRIGGER ===');
 
     // Optional: Add basic authentication for security
     const authHeader = request.headers.get('authorization');
@@ -26,7 +26,7 @@ export async function POST(request) {
       }
     });
 
-    console.log('✅ Manual subscription check triggered successfully:', ids);
+    // console.log('✅ Manual subscription check triggered successfully:', ids);
 
     return NextResponse.json({
       success: true,
@@ -53,7 +53,7 @@ export async function POST(request) {
 // GET endpoint to check subscription status without triggering
 export async function GET(request) {
   try {
-    console.log('=== SUBSCRIPTION STATUS CHECK ===');
+    // console.log('=== SUBSCRIPTION STATUS CHECK ===');
 
     // Optional: Add basic authentication for security
     const authHeader = request.headers.get('authorization');

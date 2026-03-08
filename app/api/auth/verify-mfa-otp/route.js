@@ -108,7 +108,7 @@ export async function POST(request) {
             mfa_email: email,
           }
         );
-        console.log('[MFA] mfa_enabled=true persisted for:', userEmail);
+        // console.log('[MFA] mfa_enabled=true persisted for:', userEmail);
       } catch (updateErr) {
         console.error('[MFA] Failed to update mfa_enabled in users collection:', updateErr.message);
         // Return an error so the client knows DB write failed

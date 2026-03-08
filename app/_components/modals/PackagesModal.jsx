@@ -14,10 +14,6 @@ const PackagesModal = ({ isOpen, onClose }) => {
   const { currentUser } = useAuth();
   const userContext = useUser();
   
-  // Add debugging
-  console.log('PackagesModal - userContext keys:', Object.keys(userContext));
-  console.log('PackagesModal - refreshUserData type:', typeof userContext.refreshUserData);
-  
   // Destructure with fallback
   const { 
     userData = null,
@@ -98,7 +94,7 @@ const PackagesModal = ({ isOpen, onClose }) => {
         throw new Error('Invalid response from payment server. Please try again.');
       }
 
-      console.log('Order creation response:', { response: response.ok, data: orderData });
+      // console.log('Order creation response:', { response: response.ok, data: orderData });
 
       if (!response.ok) {
         const errorMessage = orderData.error || orderData.details || 'Failed to create payment order';
@@ -115,7 +111,7 @@ const PackagesModal = ({ isOpen, onClose }) => {
         order_id: orderData.id,
         handler: async function (response) {
           try {
-            console.log('Payment response received:', response);
+            // console.log('Payment response received:', response);
             setLoading(true);
             
             // Verify payment
@@ -132,7 +128,7 @@ const PackagesModal = ({ isOpen, onClose }) => {
               })
             });
 
-            console.log('Verify response status:', verifyResponse.status);
+            // console.log('Verify response status:', verifyResponse.status);
             
             let verifyData;
             try {
@@ -141,25 +137,25 @@ const PackagesModal = ({ isOpen, onClose }) => {
                 throw new Error(`Server returned ${contentType || 'non-JSON'} response`);
               }
               verifyData = await verifyResponse.json();
-              console.log('Verify response data:', verifyData);
+              // console.log('Verify response data:', verifyData);
             } catch (jsonError) {
               console.error('Failed to parse verification response as JSON:', jsonError);
               throw new Error('Invalid response from payment verification');
             }
 
             if (verifyResponse.ok && verifyData.success) {
-              console.log('Payment verification successful:', verifyData);
+              // console.log('Payment verification successful:', verifyData);
               
               // Payment successful, refresh user data
               setLoading(true);
               
               try {
                 await refreshUserData();
-                console.log('User data refreshed successfully');
+                // console.log('User data refreshed successfully');
               } catch (refreshError) {
                 console.error('Error refreshing user data:', refreshError);
                 // Fallback: reload the page to refresh user data
-                console.log('Falling back to page reload');
+                // console.log('Falling back to page reload');
                 window.location.reload();
                 return;
               }

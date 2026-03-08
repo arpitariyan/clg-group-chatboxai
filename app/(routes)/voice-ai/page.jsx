@@ -403,7 +403,7 @@ function VoiceAIPage() {
                             // Some browsers load voices asynchronously
                             synthInstance.addEventListener('voiceschanged', () => {
                                 const loadedVoices = synthInstance.getVoices()
-                                console.log('Voices loaded:', loadedVoices.length)
+                                // console.log('Voices loaded:', loadedVoices.length)
                             }, { once: true })
                         }
                     } catch (error) {
@@ -617,7 +617,7 @@ function VoiceAIPage() {
                 }
                 
                 utterance.onend = () => {
-                    console.log('Speech ended')
+                    // console.log('Speech ended')
                     setIsSpeaking(false)
                     setCurrentUtterance(null)
                 }

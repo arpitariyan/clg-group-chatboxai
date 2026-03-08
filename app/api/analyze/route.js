@@ -722,28 +722,28 @@ async function extractImageForVision(fileInfo) {
 // Implements robust document analysis with summarization and context extraction
 async function performDocumentUnderstanding(fileInfo) {
     try {
-        console.log(`Performing document understanding for: ${fileInfo.fileName}`);
-        console.log(`File path: ${fileInfo.path}, File type: ${fileInfo.fileType}`);
+        // console.log(`Performing document understanding for: ${fileInfo.fileName}`);
+        // console.log(`File path: ${fileInfo.path}, File type: ${fileInfo.fileType}`);
         
         // Check if we have a cached summary for this document
         const cacheKey = `${fileInfo.path}_${fileInfo.fileName}`;
         if (documentSummaryCache.has(cacheKey)) {
-            console.log('Using cached document summary');
+            // console.log('Using cached document summary');
             return documentSummaryCache.get(cacheKey);
         }
         
         // Download file from Appwrite Storage
-        console.log(`Downloading from Appwrite storage: ${fileInfo.path}`);
+        // console.log(`Downloading from Appwrite storage: ${fileInfo.path}`);
         const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
         const buffer = Buffer.from(fileData);
-        console.log(`File downloaded successfully. Size: ${buffer.byteLength} bytes`);
+        // console.log(`File downloaded successfully. Size: ${buffer.byteLength} bytes`);
         
         // SKIP text extraction - use Gemini's native document understanding
         // This is more reliable and works directly with PDFs, DOCX, etc.
-        console.log('Using Gemini native document understanding (no text extraction needed)');
+        // console.log('Using Gemini native document understanding (no text extraction needed)');
         
         const base64Data = Buffer.from(buffer).toString('base64');
-        console.log(`Converted to base64. Length: ${base64Data.length} characters`);
+        // console.log(`Converted to base64. Length: ${base64Data.length} characters`);
         
         const contents = [
             { text: "Analyze this document comprehensively and provide:\n\n1. A detailed summary of the document (3-5 paragraphs)\n2. Key topics and themes\n3. Important facts, figures, and data points\n4. Main arguments or conclusions\n5. Any notable sections or chapters\n\nFormat your response as:\nSUMMARY: [detailed summary]\nKEY TOPICS: [list of topics]\nIMPORTANT INFORMATION: [key facts and data]\nCONCLUSIONS: [main takeaways]" },
@@ -755,10 +755,10 @@ async function performDocumentUnderstanding(fileInfo) {
             }
         ];
 
-        console.log('Sending document to Gemini for native analysis...');
+        // console.log('Sending document to Gemini for native analysis...');
         const generated = await generateWithGeminiFailover(contents, ['gemini-2.5-flash', 'gemini-2.0-flash']);
         const analysisText = generated.text;
-        console.log('Received comprehensive analysis from Gemini');
+        // console.log('Received comprehensive analysis from Gemini');
         
         // Parse the response to extract structured information
         const summary = extractSection(analysisText, 'SUMMARY') || analysisText.substring(0, 1000);
@@ -776,7 +776,7 @@ async function performDocumentUnderstanding(fileInfo) {
         
         // Cache the result
         documentSummaryCache.set(cacheKey, documentAnalysis);
-        console.log('Document analysis cached successfully');
+        // console.log('Document analysis cached successfully');
         
         return documentAnalysis;
 
@@ -785,7 +785,7 @@ async function performDocumentUnderstanding(fileInfo) {
         
         // Fallback: Try simpler Gemini request
         try {
-            console.log('Trying fallback with simpler prompt...');
+            // console.log('Trying fallback with simpler prompt...');
             const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
             const base64Data = Buffer.from(fileData).toString('base64');
             
@@ -801,7 +801,7 @@ async function performDocumentUnderstanding(fileInfo) {
             
             const generated = await generateWithGeminiFailover(simpleContents, ['gemini-2.5-flash', 'gemini-2.0-flash']);
             const content = generated.text;
-            console.log('Fallback extraction successful');
+            // console.log('Fallback extraction successful');
             
             return {
                 fullContent: content,

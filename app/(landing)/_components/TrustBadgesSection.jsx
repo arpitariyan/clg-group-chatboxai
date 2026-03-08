@@ -14,51 +14,54 @@ const aiProviders = [
 ];
 
 const certifications = [
-  { icon: Shield, text: 'SOC 2 Type II', color: 'text-blue-600 dark:text-blue-400' },
-  { icon: Lock, text: 'GDPR Compliant', color: 'text-green-600 dark:text-green-400' },
-  { icon: Award, text: 'ISO 27001', color: 'text-purple-600 dark:text-purple-400' },
-  { icon: CheckCircle, text: 'HIPAA Ready', color: 'text-violet-600 dark:text-violet-400' },
+  { icon: Shield, text: 'SOC 2 Type II', color: 'text-blue-400' },
+  { icon: Lock, text: 'GDPR Compliant', color: 'text-emerald-400' },
+  { icon: Award, text: 'ISO 27001', color: 'text-violet-400' },
+  { icon: CheckCircle, text: 'HIPAA Ready', color: 'text-purple-400' },
 ];
 
 export default function TrustBadgesSection() {
   const [ref, isInView] = useInView({ once: true, threshold: 0.1 });
 
   return (
-    <section 
+    <section
       ref={ref}
-      className="section-padding bg-white dark:bg-gray-950 border-t border-gray-100 dark:border-gray-900"
+      className="section-padding bg-[#0a0a0f] border-t border-white/[0.04]"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <motion.div
           initial="hidden"
-          animate={isInView ? "visible" : "hidden"}
+          animate={isInView ? 'visible' : 'hidden'}
           variants={staggerContainer}
           className="space-y-16"
         >
-          {/* AI Providers Section */}
-          <div className="text-center space-y-8">
-            <motion.p 
+          {/* AI Providers */}
+          <div className="text-center space-y-10">
+            <motion.p
               variants={fadeInUp}
-              className="text-sm font-medium text-gray-500 dark:text-gray-500 uppercase tracking-wider"
+              className="text-xs font-semibold text-gray-600 uppercase tracking-[0.2em]"
             >
               Powered by Leading AI Models
             </motion.p>
-            
-            <motion.div 
+
+            <motion.div
               variants={fadeInUp}
-              className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-8"
+              className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4"
             >
               {aiProviders.map((provider, index) => (
                 <motion.div
                   key={provider.name}
                   custom={index}
                   variants={fadeInUp}
-                  className="group text-center space-y-1"
+                  className="relative group text-center space-y-1 p-4 rounded-xl border border-white/[0.04] bg-white/[0.02] hover:bg-white/[0.04] transition-all duration-500 cursor-default overflow-hidden"
                 >
-                  <div className="text-lg font-semibold text-gray-400 dark:text-gray-600 group-hover:text-gray-900 dark:group-hover:text-gray-300 transition-colors duration-300">
+                  {/* Subtle hover gradient background */}
+                  <div className="absolute inset-0 bg-gradient-to-br from-violet-600/0 via-transparent to-purple-600/0 group-hover:from-violet-600/10 group-hover:via-transparent group-hover:to-purple-600/10 transition-all duration-500" />
+                  
+                  <div className="relative z-10 text-sm font-semibold text-gray-500 group-hover:text-white transition-colors duration-300">
                     {provider.name}
                   </div>
-                  <div className="text-xs text-gray-400 dark:text-gray-600">
+                  <div className="relative z-10 text-xs text-gray-700 group-hover:text-gray-400 transition-colors duration-300">
                     {provider.subtext}
                   </div>
                 </motion.div>
@@ -66,34 +69,32 @@ export default function TrustBadgesSection() {
             </motion.div>
           </div>
 
-          {/* Security Certifications */}
-          <div className="border-t border-gray-200 dark:border-gray-800 pt-12">
-            <motion.div 
-              variants={fadeInUp}
-              className="flex flex-wrap items-center justify-center gap-8 md:gap-12"
-            >
-              {certifications.map((cert, index) => (
-                <motion.div
-                  key={cert.text}
-                  custom={index}
-                  variants={fadeInUp}
-                  className="flex items-center gap-2 group"
-                >
-                  <cert.icon className={`w-5 h-5 ${cert.color}`} />
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
-                    {cert.text}
-                  </span>
-                </motion.div>
-              ))}
-            </motion.div>
-          </div>
+          {/* Divider */}
+          <div className="border-t border-white/[0.04]" />
 
-          {/* Trust Statement */}
-          <motion.div 
+          {/* Security Certifications */}
+          <motion.div
             variants={fadeInUp}
-            className="text-center"
+            className="flex flex-wrap items-center justify-center gap-8 md:gap-16"
           >
-            <p className="text-sm text-gray-500 dark:text-gray-500 max-w-2xl mx-auto">
+            {certifications.map((cert, index) => (
+              <motion.div
+                key={cert.text}
+                custom={index}
+                variants={fadeInUp}
+                className="flex items-center gap-2.5 group"
+              >
+                <cert.icon className={`w-4 h-4 ${cert.color} opacity-70 group-hover:opacity-100 transition-opacity`} />
+                <span className="text-sm font-medium text-gray-500 group-hover:text-gray-300 transition-colors">
+                  {cert.text}
+                </span>
+              </motion.div>
+            ))}
+          </motion.div>
+
+          {/* Trust statement */}
+          <motion.div variants={fadeInUp} className="text-center">
+            <p className="text-sm text-gray-700 max-w-2xl mx-auto">
               Trusted by 50,000+ users worldwide. Your data is encrypted end-to-end and we never train AI models on your private conversations.
             </p>
           </motion.div>

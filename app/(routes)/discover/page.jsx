@@ -62,7 +62,7 @@ function Discover() {
             
             // Schedule refresh after 24 hours
             refreshTimerRef.current = setTimeout(() => {
-                console.log('Auto-refreshing news after 24 hours');
+                // console.log('Auto-refreshing news after 24 hours');
                 loadNewsData();
                 setupAutoRefresh(); // Re-setup for next 24 hours
             }, 24 * 60 * 60 * 1000); // 24 hours in milliseconds
@@ -98,7 +98,7 @@ function Discover() {
                 
                 // Use cached data if less than 24 hours old
                 if (hoursDiff < 24) {
-                    console.log('Using cached news data');
+                    // console.log('Using cached news data');
                     const parsedData = JSON.parse(cachedData);
                     setAllCategoriesNews(parsedData);
                     setLastRefresh(new Date(parseInt(cachedTimestamp)));
@@ -109,7 +109,7 @@ function Discover() {
             }
             
             // Fetch fresh data if no cache or cache is old
-            console.log('Fetching fresh news data');
+            // console.log('Fetching fresh news data');
             await fetchAllCategoriesNews();
             
         } catch (err) {
@@ -135,7 +135,7 @@ function Discover() {
                 if (results[index].status === 'fulfilled' && results[index].value.length > 0) {
                     newsData[category.title] = results[index].value;
                     combinedNews = [...combinedNews, ...results[index].value];
-                    console.log(`Loaded ${results[index].value.length} articles for ${category.title}`);
+                    // console.log(`Loaded ${results[index].value.length} articles for ${category.title}`);
                 } else {
                     newsData[category.title] = [];
                     console.warn(`Failed to load ${category.title}`);
@@ -197,7 +197,7 @@ function Discover() {
                     }
                     
                     newsData = uniqueNews.slice(0, 15); // Limit to 15 articles
-                    console.log(`Combined ${newsData.length} articles from worldwide and India for ${category}`);
+                    // console.log(`Combined ${newsData.length} articles from worldwide and India for ${category}`);
                 } catch (indiaError) {
                     console.warn(`Failed to fetch India-specific news for ${category}:`, indiaError.message);
                     // Continue with just worldwide news
@@ -279,7 +279,7 @@ function Discover() {
                 clearTimeout(refreshTimerRef.current);
             }
             refreshTimerRef.current = setTimeout(() => {
-                console.log('Auto-refreshing news after 24 hours (from last manual refresh)');
+                // console.log('Auto-refreshing news after 24 hours (from last manual refresh)');
                 loadNewsData();
             }, 24 * 60 * 60 * 1000);
             

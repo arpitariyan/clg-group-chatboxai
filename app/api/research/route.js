@@ -337,7 +337,7 @@ export async function POST(request) {
                 );
 
                 const webResults = response.data?.categorizedResults?.web || [];
-                console.log(`✓ Query "${query.substring(0, 40)}..." returned ${webResults.length} results`);
+                // console.log(`✓ Query "${query.substring(0, 40)}..." returned ${webResults.length} results`);
                 return webResults;
             } catch (error) {
                 console.error(`✗ Search failed for query: ${query}`, error.message);

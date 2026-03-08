@@ -68,9 +68,6 @@ const SettingsModal = ({ isOpen, onClose }) => {
   const { currentUser, logout } = useAuth();
   const userContext = useUser();
   
-  // Debug logging
-  console.log('SettingsModal userContext:', userContext);
-  
   const { 
     userData, 
     updateUserData = async () => {

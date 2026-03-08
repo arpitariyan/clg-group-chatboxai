@@ -195,7 +195,7 @@ function resolveCsv(candidates) {
 function processCollection(config) {
   const csvPath = resolveCsv(config.fileCandidates);
   if (!csvPath) {
-    console.log(`  ⚠  Skipping ${config.key} — CSV not found`);
+    // console.log(`  ⚠  Skipping ${config.key} — CSV not found`);
     return;
   }
 
@@ -270,18 +270,18 @@ function processCollection(config) {
 
   const outPath = path.join(OUT_DIR, config.outputFile);
   writeFileSync(outPath, lines.join('\n'), 'utf-8');
-  console.log(`  ✅  ${config.key}  →  console-ready/${config.outputFile}  (${cleaned.length} rows)`);
+  // console.log(`  ✅  ${config.key}  →  console-ready/${config.outputFile}  (${cleaned.length} rows)`);
 }
 
-console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-console.log('  Preparing Appwrite Console-ready CSVs');
-console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// console.log('  Preparing Appwrite Console-ready CSVs');
+// console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
 for (const config of COLLECTIONS) {
   processCollection(config);
 }
 
-console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-console.log(`  Done! Import files are in:`);
-console.log(`  database/csv-exports/console-ready/`);
-console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+// console.log(`  Done! Import files are in:`);
+// console.log(`  database/csv-exports/console-ready/`);
+// console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

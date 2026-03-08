@@ -13,38 +13,38 @@ const verifySignature = (body, signature) => {
 
 export async function POST(request) {
   try {
-    console.log('=== PAYMENT WEBHOOK REQUEST START ===');
-    console.log('Request method:', request.method);
-    console.log('Request URL:', request.url);
-    console.log('Environment check:');
-    console.log('  - RAZORPAY_KEY_SECRET:', !!process.env.RAZORPAY_KEY_SECRET);
-    console.log('  - RAZORPAY_WEBHOOK_SECRET:', !!process.env.RAZORPAY_WEBHOOK_SECRET);
-    console.log('  - APPWRITE_PROJECT_ID:', !!process.env.APPWRITE_PROJECT_ID);
+    // console.log('=== PAYMENT WEBHOOK REQUEST START ===');
+    // console.log('Request method:', request.method);
+    // console.log('Request URL:', request.url);
+    // console.log('Environment check:');
+    // console.log('  - RAZORPAY_KEY_SECRET:', !!process.env.RAZORPAY_KEY_SECRET);
+    // console.log('  - RAZORPAY_WEBHOOK_SECRET:', !!process.env.RAZORPAY_WEBHOOK_SECRET);
+    // console.log('  - APPWRITE_PROJECT_ID:', !!process.env.APPWRITE_PROJECT_ID);
 
     const body = await request.json();
-    console.log('Request body keys:', Object.keys(body));
-    console.log('Request body:', JSON.stringify(body, null, 2));
+    // console.log('Request body keys:', Object.keys(body));
+    // console.log('Request body:', JSON.stringify(body, null, 2));
 
     const signature = request.headers.get('X-Razorpay-Signature');
-    console.log('Razorpay signature header:', !!signature);
+    // console.log('Razorpay signature header:', !!signature);
 
     // For manual verification calls (from frontend)
     if (body.razorpay_order_id && body.razorpay_payment_id && body.razorpay_signature) {
-      console.log('Processing manual payment verification');
+      // console.log('Processing manual payment verification');
       const result = await handlePaymentVerification(body);
-      console.log('=== PAYMENT VERIFICATION COMPLETED ===');
+      // console.log('=== PAYMENT VERIFICATION COMPLETED ===');
       return result;
     }
 
     // For webhook calls
     if (signature) {
-      console.log('Processing webhook call');
+      // console.log('Processing webhook call');
       const result = await handleWebhook(body, signature);
-      console.log('=== WEBHOOK PROCESSING COMPLETED ===');
+      // console.log('=== WEBHOOK PROCESSING COMPLETED ===');
       return result;
     }
 
-    console.log('Invalid request - missing required data');
+    // console.log('Invalid request - missing required data');
     return NextResponse.json(
       { error: 'Invalid request - missing payment data or signature', success: false },
       { status: 400 }
@@ -68,7 +68,7 @@ export async function POST(request) {
 async function handlePaymentVerification(body) {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_email } = body;
 
-  console.log('Processing payment verification for:', { razorpay_order_id, razorpay_payment_id, user_email });
+  // console.log('Processing payment verification for:', { razorpay_order_id, razorpay_payment_id, user_email });
 
   try {
     // Validate required fields
@@ -94,11 +94,11 @@ async function handlePaymentVerification(body) {
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    console.log('Signature verification:', {
-      provided: razorpay_signature,
-      generated: generated_signature,
-      match: generated_signature === razorpay_signature
-    });
+    // console.log('Signature verification:', {
+    //   provided: razorpay_signature,
+    //   generated: generated_signature,
+    //   match: generated_signature === razorpay_signature
+    // });
 
     if (generated_signature !== razorpay_signature) {
       return NextResponse.json(
@@ -107,7 +107,7 @@ async function handlePaymentVerification(body) {
       );
     }
 
-    console.log('Payment signature verified successfully');
+    // console.log('Payment signature verified successfully');
 
     // Check if user exists
     const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
@@ -120,17 +120,17 @@ async function handlePaymentVerification(body) {
       console.error('User not found, creating new user with Pro plan');
 
       // If user doesn't exist, create them with Pro plan
-      console.log('Creating new user with Pro plan');
-      
+      // console.log('Creating new user with Pro plan');
+
       // Calculate subscription dates
       const subscriptionStartDate = new Date();
       const subscriptionEndDate = new Date();
       subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
 
-      console.log('Setting subscription dates for new user:', {
-        start: subscriptionStartDate.toISOString(),
-        end: subscriptionEndDate.toISOString()
-      });
+      // console.log('Setting subscription dates for new user:', {
+      //   start: subscriptionStartDate.toISOString(),
+      //   end: subscriptionEndDate.toISOString()
+      // });
 
       const newUser = {
         email: user_email,
@@ -156,13 +156,13 @@ async function handlePaymentVerification(body) {
         );
       }
 
-      console.log('New user created successfully:', { 
-        email: user_email, 
-        plan: 'pro', 
-        credits: 25000,
-        subscription_start: subscriptionStartDate.toISOString(),
-        subscription_end: subscriptionEndDate.toISOString()
-      });
+      // console.log('New user created successfully:', { 
+      //   email: user_email, 
+      //   plan: 'pro', 
+      //   credits: 25000,
+      //   subscription_start: subscriptionStartDate.toISOString(),
+      //   subscription_end: subscriptionEndDate.toISOString()
+      // });
 
       // Store subscription record for new user
       try {
@@ -190,17 +190,17 @@ async function handlePaymentVerification(body) {
       });
     }
 
-    console.log('User found:', { id: existingUser.$id, email: existingUser.email, currentPlan: existingUser.plan });
+    // console.log('User found:', { id: existingUser.$id, email: existingUser.email, currentPlan: existingUser.plan });
 
     // Calculate subscription dates
     const subscriptionStartDate = new Date();
     const subscriptionEndDate = new Date();
     subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
 
-    console.log('Setting subscription dates:', {
-      start: subscriptionStartDate.toISOString(),
-      end: subscriptionEndDate.toISOString()
-    });
+    // console.log('Setting subscription dates:', {
+    //   start: subscriptionStartDate.toISOString(),
+    //   end: subscriptionEndDate.toISOString()
+    // });
 
     // Update existing user to Pro plan with subscription dates
     let updatedUser;
@@ -220,13 +220,13 @@ async function handlePaymentVerification(body) {
       );
     }
 
-    console.log('User updated successfully:', { 
-      email: user_email, 
-      plan: 'pro', 
-      credits: 25000,
-      subscription_start: subscriptionStartDate.toISOString(),
-      subscription_end: subscriptionEndDate.toISOString()
-    });
+    // console.log('User updated successfully:', { 
+    //   email: user_email, 
+    //   plan: 'pro', 
+    //   credits: 25000,
+    //   subscription_start: subscriptionStartDate.toISOString(),
+    //   subscription_end: subscriptionEndDate.toISOString()
+    // });
 
     // Store subscription record
     try {
@@ -238,7 +238,7 @@ async function handlePaymentVerification(body) {
         currency: 'INR',
         status: 'active'
       });
-      console.log('Subscription record created successfully');
+      // console.log('Subscription record created successfully');
     } catch (subscriptionError) {
       console.error('Failed to store subscription:', subscriptionError);
       // Don't fail the payment verification for this
@@ -288,7 +288,7 @@ async function handleWebhook(body, signature) {
   const event = body.event;
   const payload = body.payload;
 
-  console.log('Received webhook:', event);
+  // console.log('Received webhook:', event);
 
   switch (event) {
     case 'payment.captured':
@@ -308,14 +308,14 @@ async function handleWebhook(body, signature) {
       break;
 
     default:
-      console.log('Unhandled webhook event:', event);
+    // console.log('Unhandled webhook event:', event);
   }
 
   return NextResponse.json({ status: 'ok' });
 }
 
 async function handlePaymentCaptured(payment) {
-  console.log('Payment captured:', payment.id);
+  // console.log('Payment captured:', payment.id);
 
   // Update subscription status if needed
   if (payment.order_id) {
@@ -330,7 +330,7 @@ async function handlePaymentCaptured(payment) {
 }
 
 async function handlePaymentFailed(payment) {
-  console.log('Payment failed:', payment.id);
+  // console.log('Payment failed:', payment.id);
 
   // Update subscription status
   if (payment.order_id) {
@@ -345,7 +345,7 @@ async function handlePaymentFailed(payment) {
 }
 
 async function handleSubscriptionCharged(subscription, payment) {
-  console.log('Subscription charged:', subscription.id);
+  // console.log('Subscription charged:', subscription.id);
 
   // Reset monthly credits and extend subscription for recurring payments
   if (subscription.id) {
@@ -361,10 +361,10 @@ async function handleSubscriptionCharged(subscription, payment) {
       const subscriptionEndDate = new Date();
       subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
 
-      console.log('Extending subscription for user:', subscriptionRecord.user_email, {
-        start: subscriptionStartDate.toISOString(),
-        end: subscriptionEndDate.toISOString()
-      });
+      // console.log('Extending subscription for user:', subscriptionRecord.user_email, {
+      //   start: subscriptionStartDate.toISOString(),
+      //   end: subscriptionEndDate.toISOString()
+      // });
 
       const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
         Query.equal('email', subscriptionRecord.user_email),
@@ -384,7 +384,7 @@ async function handleSubscriptionCharged(subscription, payment) {
 }
 
 async function handleSubscriptionCancelled(subscription) {
-  console.log('Subscription cancelled:', subscription.id);
+  // console.log('Subscription cancelled:', subscription.id);
 
   // Downgrade user to free plan
   const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [

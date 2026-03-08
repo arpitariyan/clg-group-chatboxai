@@ -41,7 +41,7 @@ export async function POST(request) {
       finalReceipt = finalReceipt.substring(0, 40);
     }
 
-    console.log('Creating Razorpay order:', { amount, currency, receipt: finalReceipt });
+    // console.log('Creating Razorpay order:', { amount, currency, receipt: finalReceipt });
 
     // Create Razorpay order
     const order = await razorpay.orders.create({
@@ -51,7 +51,7 @@ export async function POST(request) {
       payment_capture: 1, // Auto capture payment
     });
 
-    console.log('Razorpay order created successfully:', order.id);
+    // console.log('Razorpay order created successfully:', order.id);
 
     return NextResponse.json({
       id: order.id,

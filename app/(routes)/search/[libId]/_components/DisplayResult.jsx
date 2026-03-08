@@ -908,7 +908,7 @@ function DisplayResult({ searchInputRecord }) {
                 throw new Error('No runId received from LLM API');
             }
 
-            console.log('Starting status check for runId:', runId);
+            // console.log('Starting status check for runId:', runId);
 
             let statusCheckCount = 0;
             const maxStatusChecks = 60; // Stop after 60 checks (about 5 minutes)

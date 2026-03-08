@@ -126,7 +126,7 @@ export async function POST(request) {
           `,
         });
 
-        console.log('MFA OTP email sent to:', email);
+        // console.log('MFA OTP email sent to:', email);
 
         return NextResponse.json({
           success: true,
@@ -155,7 +155,7 @@ export async function POST(request) {
     } else {
       // SMTP not configured — dev/testing fallback
       console.warn('[MFA] SMTP not configured. Set SMTP_USER and SMTP_PASS in .env.local');
-      console.log('[MFA] Dev OTP for', email, ':', otp);
+      // console.log('[MFA] Dev OTP for', email, ':', otp);
 
       return NextResponse.json({
         success: true,

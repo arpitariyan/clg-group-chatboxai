@@ -4,7 +4,7 @@ export async function POST(req) {
     try {
         const { prompt, filePaths, libId, conversationHistory } = await req.json();
         
-        console.log('Test API called with:', { prompt, fileCount: filePaths?.length, libId, hasConversationHistory: !!conversationHistory });
+        // console.log('Test API called with:', { prompt, fileCount: filePaths?.length, libId, hasConversationHistory: !!conversationHistory });
         
         // Build a more contextual test response
         let contextInfo = '';

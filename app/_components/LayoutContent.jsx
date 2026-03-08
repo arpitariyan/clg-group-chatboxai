@@ -118,7 +118,7 @@ export default function LayoutContent({ children }) {
         if (successful) {
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
-          console.log('Link copied to clipboard (fallback)');
+          // console.log('Link copied to clipboard (fallback)');
         } else {
           console.error('Failed to copy link');
         }
