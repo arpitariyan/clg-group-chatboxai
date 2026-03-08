@@ -32,7 +32,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { toast } from 'react-toastify';
+import { toast } from '@/lib/alert';
 import moment from 'moment';
 
 export default function AdminUsersPage() {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { checkImageGenerationLimit, checkUserPlan } from '@/lib/planUtils';
+import { checkImageGenerationLimit, checkUserPlan } from '@/lib/planUtils-server';
 
 export async function GET(request) {
     try {

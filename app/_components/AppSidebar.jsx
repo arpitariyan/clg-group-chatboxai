@@ -1,119 +1,354 @@
 "use client"
-import React, { useState } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import {
     Sidebar,
     SidebarContent,
     SidebarFooter,
     SidebarGroup,
+    SidebarGroupLabel,
     SidebarHeader,
     SidebarMenu,
+    SidebarMenuAction,
     SidebarMenuButton,
     SidebarMenuItem,
+    SidebarRail,
+    useSidebar,
 } from "@/components/ui/sidebar"
 import Image from 'next/image'
-import { Compass, GalleryHorizontalEnd, Ghost, LogIn, Globe, Search, LogOut, User, Moon, Sun, Crown, Settings, Zap, Sparkles } from 'lucide-react'
+import {
+    Search,
+    GalleryHorizontalEnd,
+    LogIn,
+    Globe,
+    LogOut,
+    Crown,
+    ChevronsUpDown,
+    BadgeCheck,
+    CreditCard,
+    MoreHorizontal,
+    ImageIcon,
+    FlaskConical,
+    User,
+    Sparkles,
+    Shield,
+    HelpCircle,
+    Smile,
+    Pencil,
+    Trash2,
+    Check,
+    X,
+} from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { FiArrowUpRight } from "react-icons/fi";
-import { TiWorld } from "react-icons/ti";
-import { FaInstagram } from "react-icons/fa";
+import { Input } from '@/components/ui/input'
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuGroup,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUser } from '@/contexts/UserContext'
 import { useTheme } from '@/contexts/ThemeContext'
+import { toast } from '@/lib/alert'
 import Link from 'next/link'
 import LogoutConfirmation from './LogoutConfirmation'
 import PackagesModal from './modals/PackagesModal'
 import SettingsModal from './modals/SettingsModal'
+import AvatarPickerModal from './modals/AvatarPickerModal'
 
 
-const MenuOptions = [
-    {
-        title: 'Home',
-        icons: Search,
-        path: '/app',
-    },
-    {
-        title: 'Snapshot',
-        icons: Sparkles,
-        path: '/snapshot',
-    },
-    {
-        title: 'Library',
-        icons: GalleryHorizontalEnd,
-        path: '/library',
-    },
+const navItems = [
+    { title: 'Home', icon: Search, path: '/app' },
+    { title: 'Snapshot', icon: Sparkles, path: '/snapshot' },
+    { title: 'Library', icon: GalleryHorizontalEnd, path: '/library' },
 ]
 
+function getLibraryItemMeta(item) {
+    if (item.dataType === 'image-generation') {
+        return { icon: ImageIcon, url: `/image-gen/${item.libId}` }
+    }
+    if (item.dataType === 'website-builder') {
+        return { icon: Globe, url: `/website-builder/${item.libId}` }
+    }
+    if (item.type === 'research') {
+        return { icon: FlaskConical, url: `/search/${item.libId}` }
+    }
+    return { icon: Search, url: `/search/${item.libId}` }
+}
+
+function truncateTitle(str, max = 26) {
+    if (!str) return 'Untitled'
+    return str.length > max ? str.substring(0, max) + '…' : str
+}
+
+function getHistoryItemKey(item) {
+    return `${item.libId}-${item.dataType}`
+}
+
 const AppSidebar = () => {
-    const path = usePathname();
-    const router = useRouter();
-    const { currentUser, logout } = useAuth();
-    const { plan = 'free', credits = 0, isPro = false, isSpecialAccount = false, loading = true } = useUser() || {};
-    const { isDarkMode, toggleTheme } = useTheme();
-    const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
-    const [showPackagesModal, setShowPackagesModal] = useState(false);
-    const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const path = usePathname()
+    const router = useRouter()
+    const { currentUser, logout } = useAuth()
+    const { userData, plan = 'free', isPro = false } = useUser() || {}
+    const { isDarkMode } = useTheme()
+    const { isMobile } = useSidebar()
 
-    const handleLogoutClick = () => {
-        setShowLogoutConfirmation(true);
-    };
+    const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false)
+    const [showPackagesModal, setShowPackagesModal] = useState(false)
+    const [showSettingsModal, setShowSettingsModal] = useState(false)
+    const [showAvatarModal, setShowAvatarModal] = useState(false)
+    const [historyItems, setHistoryItems] = useState([])
+    const [editingItemKey, setEditingItemKey] = useState(null)
+    const [editingTitle, setEditingTitle] = useState('')
+    const [renameLoadingKey, setRenameLoadingKey] = useState(null)
+    const [deleteTarget, setDeleteTarget] = useState(null)
+    const [deleteLoadingKey, setDeleteLoadingKey] = useState(null)
 
+    const DEFAULT_AVATAR = '/avatar/Men-5.png'
+
+    const getAvatarStorageKey = (email) => `chatbox_avatar_${email}`
+
+    const [selectedAvatar, setSelectedAvatar] = useState(DEFAULT_AVATAR)
+
+    // Load saved avatar from localStorage when user signs in
+    useEffect(() => {
+        if (currentUser?.email) {
+            const saved = localStorage.getItem(getAvatarStorageKey(currentUser.email))
+            setSelectedAvatar(saved || DEFAULT_AVATAR)
+        } else {
+            setSelectedAvatar(DEFAULT_AVATAR)
+        }
+    }, [currentUser?.email])
+
+    const handleAvatarSelect = (avatarSrc) => {
+        setSelectedAvatar(avatarSrc)
+        if (currentUser?.email) {
+            localStorage.setItem(getAvatarStorageKey(currentUser.email), avatarSrc)
+        }
+    }
+
+    const handleLogoutClick = () => setShowLogoutConfirmation(true)
+    const handleLogoutCancel = () => setShowLogoutConfirmation(false)
     const handleLogoutConfirm = async () => {
         try {
-            await logout();
-            setShowLogoutConfirmation(false);
-            router.push('/sign-in');
+            await logout()
+            setShowLogoutConfirmation(false)
+            router.push('/sign-in')
         } catch (error) {
-            console.error('Logout error:', error);
-            setShowLogoutConfirmation(false);
+            console.error('Logout error:', error)
+            setShowLogoutConfirmation(false)
         }
-    };
+    }
 
-    const handleLogoutCancel = () => {
-        setShowLogoutConfirmation(false);
-    };
-
-    // Get user's initials for profile icon
-    const getUserInitials = (user) => {
-        if (user?.displayName) {
-            return user.displayName.split(' ').map(name => name[0]).join('').toUpperCase();
+    const getUserInitials = (name, email) => {
+        if (name) {
+            return String(name).split(' ').map(n => n[0]).join('').toUpperCase()
         }
-        if (user?.email) {
-            return user.email[0].toUpperCase();
+        if (email) return email[0].toUpperCase()
+        return 'U'
+    }
+
+    const getUserDisplayName = (name, email) => {
+        if (name) return name
+        if (email) {
+            const emailName = email.split('@')[0]
+            const clean = emailName.replace(/[0-9._-]/g, '')
+            return clean.charAt(0).toUpperCase() + clean.slice(1).toLowerCase()
         }
-        return 'U';
-    };
+        return 'User'
+    }
 
-    // Extract and format user's name from email
-    const getUserNameFromEmail = (user) => {
-        if (user?.displayName) {
-            const name = user.displayName;
-            return name.length > 5 ? name.substring(0, 5) + '…' : name;
+    const resolvedDisplayName = getUserDisplayName(
+        (userData?.name || currentUser?.displayName || '').trim(),
+        currentUser?.email
+    )
+
+    useEffect(() => {
+        if (!currentUser?.email) {
+            setHistoryItems([])
+            return
+        }
+        const fetchHistory = async () => {
+            try {
+                const res = await fetch(
+                    `/api/library/history?email=${encodeURIComponent(currentUser.email)}`,
+                    { cache: 'no-store' }
+                )
+                if (!res.ok) return
+                const payload = await res.json()
+                const { libraryDocs = [], imageGenDocs = [], websiteProjectsDocs = [] } = payload
+
+                const searchItems = libraryDocs.map(doc => ({
+                    libId: doc.libId,
+                    dataType: 'search',
+                    type: doc.type,
+                    title: doc.searchInput || 'Untitled',
+                    created_at: doc.created_at || doc.$createdAt,
+                }))
+                const imageItems = imageGenDocs.map(doc => ({
+                    libId: doc.libId || doc.$id,
+                    dataType: 'image-generation',
+                    type: 'image-generation',
+                    title: doc.prompt || 'Image Generation',
+                    created_at: doc.created_at || doc.$createdAt,
+                }))
+                const websiteItems = websiteProjectsDocs.map(doc => ({
+                    libId: doc.$id,
+                    dataType: 'website-builder',
+                    type: 'website-builder',
+                    title: doc.title || doc.project_name || doc.name || doc.initial_prompt || 'Website Project',
+                    created_at: doc.created_at || doc.$createdAt,
+                }))
+
+                const combined = [...searchItems, ...imageItems, ...websiteItems].filter(item => item.libId)
+
+                setHistoryItems(combined)
+            } catch (err) {
+                console.error('[AppSidebar] History fetch error:', err)
+            }
+        }
+        fetchHistory()
+    }, [currentUser?.email])
+
+    const sortedHistoryItems = useMemo(() => {
+        return [...historyItems]
+            .filter(item => item?.libId)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(0, 10)
+    }, [historyItems])
+
+    const startRename = (item) => {
+        setEditingItemKey(getHistoryItemKey(item))
+        setEditingTitle(item.title || 'Untitled')
+    }
+
+    const cancelRename = () => {
+        if (renameLoadingKey) return
+        setEditingItemKey(null)
+        setEditingTitle('')
+    }
+
+    const submitRename = async (item) => {
+        const itemKey = getHistoryItemKey(item)
+        const trimmedTitle = editingTitle.trim()
+
+        if (!trimmedTitle) {
+            toast.error('Title cannot be empty.')
+            return
         }
 
-        if (user?.email) {
-            // Extract name from email (part before @)
-            const emailName = user.email.split('@')[0];
-            // Remove numbers, dots, underscores, and hyphens, then capitalize
-            const cleanName = emailName.replace(/[0-9._-]/g, '');
-            const formattedName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1).toLowerCase();
-
-            // Truncate if longer than 5 characters
-            return formattedName.length > 5 ? formattedName.substring(0, 5) + '…' : formattedName;
+        if (trimmedTitle === (item.title || '').trim()) {
+            setEditingItemKey(null)
+            setEditingTitle('')
+            return
         }
 
-        return 'User';
-    };
+        if (!currentUser?.email) {
+            toast.error('Please sign in to rename chats.')
+            return
+        }
+
+        const previousTitle = item.title
+        setRenameLoadingKey(itemKey)
+        setHistoryItems(prev => prev.map(historyItem => {
+            if (getHistoryItemKey(historyItem) !== itemKey) return historyItem
+            return { ...historyItem, title: trimmedTitle }
+        }))
+
+        try {
+            const response = await fetch('/api/library/update', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    libId: item.libId,
+                    dataType: item.dataType,
+                    userEmail: currentUser.email,
+                    title: trimmedTitle,
+                }),
+            })
+
+            const result = await response.json()
+            if (!response.ok || !result?.success) {
+                throw new Error(result?.error || result?.details || 'Rename failed')
+            }
+
+            toast.success('Chat renamed.')
+            setEditingItemKey(null)
+            setEditingTitle('')
+        } catch (error) {
+            setHistoryItems(prev => prev.map(historyItem => {
+                if (getHistoryItemKey(historyItem) !== itemKey) return historyItem
+                return { ...historyItem, title: previousTitle }
+            }))
+            toast.error(error?.message || 'Failed to rename chat.')
+        } finally {
+            setRenameLoadingKey(null)
+        }
+    }
+
+    const confirmDelete = async () => {
+        if (!deleteTarget || !currentUser?.email) {
+            toast.error('Unable to delete this chat right now.')
+            return
+        }
+
+        const itemKey = getHistoryItemKey(deleteTarget)
+        setDeleteLoadingKey(itemKey)
+
+        try {
+            const response = await fetch('/api/library/delete', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    libId: deleteTarget.libId,
+                    dataType: deleteTarget.dataType,
+                    userEmail: currentUser.email,
+                }),
+            })
+
+            const result = await response.json()
+            if (!response.ok || !result?.success) {
+                throw new Error(result?.error || result?.details || 'Delete failed')
+            }
+
+            setHistoryItems(prev => prev.filter(item => getHistoryItemKey(item) !== itemKey))
+            if (editingItemKey === itemKey) {
+                setEditingItemKey(null)
+                setEditingTitle('')
+            }
+            setDeleteTarget(null)
+            toast.success('Chat deleted.')
+        } catch (error) {
+            toast.error(error?.message || 'Failed to delete chat.')
+        } finally {
+            setDeleteLoadingKey(null)
+        }
+    }
+
+    const isSpecial = currentUser?.email === 'arpitariyanm@gmail.com'
+    const hasActivePro = plan === 'pro' || isPro
 
     return (
         <>
-            <Sidebar>
-                <SidebarHeader className="bg-accent dark:bg-[oklch(0.209_0_0)] flex items-center p-5">
+            <Sidebar collapsible="icon">
+                <SidebarHeader className="bg-accent dark:bg-[oklch(0.209_0_0)]">
+                    {/* Full logo — hidden when sidebar is collapsed to icon strip */}
                     <div
-                        className="relative select-none"
-                        onContextMenu={(e) => e.preventDefault()}
-                        onDragStart={(e) => e.preventDefault()}
+                        className="group-data-[collapsible=icon]:hidden p-2 select-none"
+                        onContextMenu={e => e.preventDefault()}
+                        onDragStart={e => e.preventDefault()}
                         style={{
                             userSelect: 'none',
                             WebkitUserSelect: 'none',
@@ -121,18 +356,18 @@ const AppSidebar = () => {
                             msUserSelect: 'none',
                             WebkitTouchCallout: 'none',
                             WebkitUserDrag: 'none',
-                            KhtmlUserSelect: 'none'
+                            KhtmlUserSelect: 'none',
                         }}
                     >
                         <Image
                             src={isDarkMode ? "/Chatboxai_logo_main_2.png" : "/Chatboxai_logo_main.png"}
-                            alt='logo'
+                            alt="logo"
                             width={200}
                             height={100}
                             className="pointer-events-none"
                             draggable={false}
-                            onContextMenu={(e) => e.preventDefault()}
-                            onDragStart={(e) => e.preventDefault()}
+                            onContextMenu={e => e.preventDefault()}
+                            onDragStart={e => e.preventDefault()}
                             style={{
                                 userSelect: 'none',
                                 WebkitUserSelect: 'none',
@@ -140,241 +375,393 @@ const AppSidebar = () => {
                                 msUserSelect: 'none',
                                 WebkitTouchCallout: 'none',
                                 WebkitUserDrag: 'none',
-                                KhtmlUserSelect: 'none'
+                                KhtmlUserSelect: 'none',
                             }}
                         />
                     </div>
+                    {/* Icon-only mark shown when collapsed */}
+                    <div
+                        className="hidden group-data-[collapsible=icon]:flex items-center justify-center py-2 select-none"
+                        onContextMenu={e => e.preventDefault()}
+                        onDragStart={e => e.preventDefault()}
+                        style={{ userSelect: 'none', WebkitUserSelect: 'none', WebkitUserDrag: 'none' }}
+                    >
+                        <Image
+                            src="/favicon.png"
+                            alt="logo"
+                            width={32}
+                            height={32}
+                            className="pointer-events-none"
+                            draggable={false}
+                            onContextMenu={e => e.preventDefault()}
+                            onDragStart={e => e.preventDefault()}
+                        />
+                    </div>
                 </SidebarHeader>
-                <SidebarContent className="bg-accent dark:bg-[oklch(0.209_0_0)]">
-                    <SidebarGroup >
-                        <SidebarContent>
+
+                <SidebarContent className="dark:bg-[oklch(0.209_0_0)]">
+                    {/* Main navigation */}
+                    <SidebarGroup>
+                        <SidebarMenu>
+                            {navItems.map(item => {
+                                const isActive = item.path === '/app'
+                                    ? path === '/app'
+                                    : path?.startsWith(item.path)
+                                return (
+                                    <SidebarMenuItem key={item.title}>
+                                        <SidebarMenuButton
+                                            asChild
+                                            isActive={isActive}
+                                            tooltip={item.title}
+                                            className="p-5 py-5 dark:text-white dark:hover:text-white"
+                                        >
+                                            <a href={item.path}>
+                                                <item.icon className="w-5 h-5" />
+                                                <span className="text-lg">{item.title}</span>
+                                            </a>
+                                        </SidebarMenuButton>
+                                    </SidebarMenuItem>
+                                )
+                            })}
+                        </SidebarMenu>
+                    </SidebarGroup>
+
+                    {/* History section — only for logged-in users, hidden when collapsed */}
+                    {currentUser && (
+                        <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+                            <SidebarGroupLabel>History</SidebarGroupLabel>
                             <SidebarMenu>
-                                {MenuOptions.map((menu, index) => {
-                                    // Better path matching logic
-                                    const isActive = menu.path === '/'
-                                        ? path === '/'
-                                        : path?.startsWith(menu.path);
+                                {sortedHistoryItems.map(item => {
+                                    const meta = getLibraryItemMeta(item)
+                                    const Icon = meta.icon
+                                    const itemKey = getHistoryItemKey(item)
+                                    const isEditing = editingItemKey === itemKey
+                                    const isRenaming = renameLoadingKey === itemKey
+                                    const isDeleting = deleteLoadingKey === itemKey
 
                                     return (
-                                        <SidebarMenuItem key={index}>
-                                            <SidebarMenuButton asChild
-                                                className={`p-5 py-5 hover:bg-transparent hover:font-bold dark:text-white dark:hover:text-white ${isActive ? 'font-bold' : ''}`}>
-                                                <a href={menu.path} className=''>
-                                                    <menu.icons className='w-5 h-5' />
-                                                    <span className='text-lg'>{menu.title}</span>
-                                                </a>
-                                            </SidebarMenuButton>
-                                        </SidebarMenuItem>
-                                    );
-                                })}
-                            </SidebarMenu>
-
-                            {/* Authentication Section */}
-                            {currentUser ? (
-                                // User Profile Section
-                                <div className="mx-5 mt-4 space-y-3">
-                                    {/* User Info */}
-                                    <div
-                                        className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-[oklch(0.2478_0_0)] rounded-xl cursor-pointer hover:bg-gray-100 dark:hover:bg-[oklch(0.25_0_0)] transition-colors"
-                                        onClick={() => setShowSettingsModal(true)}
-                                    >
-                                        <div className="w-10 h-10 bg-primary text-primary-foreground rounded-full flex items-center justify-center font-semibold">
-                                            {getUserInitials(currentUser)}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                                                    {getUserNameFromEmail(currentUser)}
-                                                </p>
-                                                {isPro && (
-                                                    <Badge variant="default" className="text-xs bg-amber-500 hover:bg-amber-600">
-                                                        {isSpecialAccount ? (
-                                                            <>
-                                                                <Crown className="w-3 h-3 mr-1" />
-                                                                Pro
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <Crown className="w-3 h-3 mr-1" />
-                                                                Pro
-                                                            </>
-                                                        )}
-                                                    </Badge>
-                                                )}
-                                            </div>
-                                            <div className="flex items-center justify-between">
-                                                <p className="text-xs text-gray-500 dark:text-gray-300 truncate">
-                                                    {currentUser.email}
-                                                </p>
-                                                <Settings className="w-3 h-3 text-gray-400" />
-                                            </div>
-                                            {!loading && (
-                                                <p className="text-xs text-gray-400 dark:text-gray-400">
-                                                    {(credits || 0).toLocaleString()} credits
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-
-
-                                    {/* Plan Action Button */}
-                                    {(() => {
-                                        // Direct email check - special account should NEVER see Try Pro button
-                                        if (currentUser?.email === 'arpitariyanm@gmail.com') {
-                                            return (
-                                                <div className="flex items-center justify-center p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
-                                                    <div className="flex items-center gap-2">
-                                                        <Crown className="w-4 h-4 text-amber-600" />
-                                                        <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                                                            Pro User
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            );
-                                        }
-
-                                        // For other users, check if they have Pro plan
-                                        const hasActivePro = plan === 'pro' || isPro;
-
-                                        return !hasActivePro ? (
-                                            <Button
-                                                onClick={() => setShowPackagesModal(true)}
-                                                className="w-full rounded-full font-bold cursor-pointer p-6 bg-linear-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground"
+                                        <SidebarMenuItem key={itemKey}>
+                                            <SidebarMenuButton
+                                                asChild
+                                                className="pr-8 dark:text-gray-300 dark:hover:text-white"
                                             >
-                                                <Crown className="w-4 h-4 mr-2" />
-                                                Try Pro
-                                            </Button>
-                                        ) : (
-                                            <div className="flex items-center justify-center p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
-                                                <div className="flex items-center gap-2">
-                                                    <Crown className="w-4 h-4 text-amber-600" />
-                                                    <span className="text-sm font-medium text-amber-700 dark:text-amber-300">
-                                                        Pro User
+                                                {isEditing ? (
+                                                    <div className="flex w-full items-center gap-1" title={item.title}>
+                                                        <Icon className="w-4 h-4 shrink-0" />
+                                                        <Input
+                                                            value={editingTitle}
+                                                            onChange={(e) => setEditingTitle(e.target.value)}
+                                                            onKeyDown={(e) => {
+                                                                if (e.key === 'Enter') {
+                                                                    e.preventDefault()
+                                                                    submitRename(item)
+                                                                } else if (e.key === 'Escape') {
+                                                                    e.preventDefault()
+                                                                    cancelRename()
+                                                                }
+                                                            }}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            disabled={isRenaming}
+                                                            maxLength={140}
+                                                            autoFocus
+                                                            className="h-7 text-sm"
+                                                        />
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-7 w-7"
+                                                            disabled={isRenaming}
+                                                            onClick={(e) => {
+                                                                e.preventDefault()
+                                                                e.stopPropagation()
+                                                                submitRename(item)
+                                                            }}
+                                                        >
+                                                            <Check className="w-4 h-4" />
+                                                            <span className="sr-only">Save rename</span>
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-7 w-7"
+                                                            disabled={isRenaming}
+                                                            onClick={(e) => {
+                                                                e.preventDefault()
+                                                                e.stopPropagation()
+                                                                cancelRename()
+                                                            }}
+                                                        >
+                                                            <X className="w-4 h-4" />
+                                                            <span className="sr-only">Cancel rename</span>
+                                                        </Button>
+                                                    </div>
+                                                ) : (
+                                                    <a href={meta.url} title={item.title}>
+                                                        <Icon className="w-4 h-4 shrink-0" />
+                                                        <span className="truncate text-sm">{truncateTitle(item.title)}</span>
+                                                    </a>
+                                                )}
+                                            </SidebarMenuButton>
+
+                                            {!isEditing && (
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <SidebarMenuAction
+                                                            showOnHover
+                                                            onClick={(e) => {
+                                                                e.preventDefault()
+                                                                e.stopPropagation()
+                                                            }}
+                                                        >
+                                                            <MoreHorizontal />
+                                                            <span className="sr-only">Open chat menu</span>
+                                                        </SidebarMenuAction>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent side="right" align="start" sideOffset={8}>
+                                                        <DropdownMenuItem
+                                                            disabled={isDeleting || isRenaming}
+                                                            onClick={(e) => {
+                                                                e.preventDefault()
+                                                                e.stopPropagation()
+                                                                startRename(item)
+                                                            }}
+                                                        >
+                                                            <Pencil className="w-4 h-4" />
+                                                            <span>Rename</span>
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem
+                                                            className="text-red-600 focus:text-red-600 dark:text-red-400"
+                                                            disabled={isDeleting || isRenaming}
+                                                            onClick={(e) => {
+                                                                e.preventDefault()
+                                                                e.stopPropagation()
+                                                                setDeleteTarget(item)
+                                                            }}
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                            <span>Delete Chat</span>
+                                                        </DropdownMenuItem>
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
+                                            )}
+                                        </SidebarMenuItem>
+                                    )
+                                })}
+                                <SidebarMenuItem>
+                                    <SidebarMenuButton
+                                        onClick={() => router.push('/library')}
+                                        className="text-muted-foreground hover:text-foreground"
+                                    >
+                                        <MoreHorizontal className="w-4 h-4" />
+                                        <span>More</span>
+                                    </SidebarMenuButton>
+                                </SidebarMenuItem>
+                            </SidebarMenu>
+                        </SidebarGroup>
+                    )}
+                </SidebarContent>
+
+                <SidebarFooter className="bg-accent dark:bg-[oklch(0.209_0_0)]">
+                    <SidebarMenu>
+                        <SidebarMenuItem>
+                            {currentUser ? (
+                                /* Logged-in: dropdown trigger with initials + name + email */
+                                <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                        <SidebarMenuButton
+                                            size="lg"
+                                            className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground dark:text-white cursor-pointer"
+                                        >
+                                            <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0">
+                                                <Image
+                                                    src={selectedAvatar}
+                                                    alt="Avatar"
+                                                    width={32}
+                                                    height={32}
+                                                    className="w-full h-full object-cover"
+                                                />
+                                            </div>
+                                            <div className="grid flex-1 text-left text-sm leading-tight">
+                                                <span className="truncate font-medium">
+                                                    {resolvedDisplayName}
+                                                </span>
+                                                <span className="truncate text-xs text-muted-foreground">
+                                                    {currentUser.email}
+                                                </span>
+                                            </div>
+                                            <ChevronsUpDown className="ml-auto size-4" />
+                                        </SidebarMenuButton>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent
+                                        className="w-56 min-w-56 rounded-lg"
+                                        side={isMobile ? 'bottom' : 'right'}
+                                        align="end"
+                                        sideOffset={4}
+                                    >
+                                        {/* User info header */}
+                                        <DropdownMenuLabel className="p-0 font-normal">
+                                            <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                                                <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0">
+                                                    <Image
+                                                        src={selectedAvatar}
+                                                        alt="Avatar"
+                                                        width={32}
+                                                        height={32}
+                                                        className="w-full h-full object-cover"
+                                                    />
+                                                </div>
+                                                <div className="grid flex-1 text-left text-sm leading-tight">
+                                                    <span className="truncate font-medium">
+                                                        {resolvedDisplayName}
+                                                    </span>
+                                                    <span className="truncate text-xs text-muted-foreground">
+                                                        {currentUser.email}
                                                     </span>
                                                 </div>
                                             </div>
-                                        );
-                                    })()}
-
-
-                                    {/* Logout Button */}
-                                    <Button
-                                        onClick={handleLogoutClick}
-                                        variant="outline"
-                                        className="w-full rounded-full font-bold cursor-pointer p-6 border-gray-200 dark:border-gray-600 hover:border-red-300 dark:hover:border-red-400 hover:text-red-600 dark:hover:text-red-400 bg-white dark:bg-[oklch(0.2478_0_0)] text-gray-900 dark:text-white"
-                                    >
-                                        <LogOut className="w-4 h-4 mr-2" />
-                                        Sign Out
-                                    </Button>
-                                </div>
-                            ) : (
-                                // Sign In/Sign Up Buttons
-                                <div className="mx-5 mt-4 space-y-3">
-                                    <Link href="/sign-in">
-                                        <Button
-                                            variant="outline"
-                                            className="w-full rounded-full font-bold cursor-pointer p-6 border-gray-200 dark:border-gray-600 hover:border-primary dark:hover:border-primary hover:text-primary dark:hover:text-primary bg-white dark:bg-[oklch(0.2478_0_0)] text-gray-900 dark:text-white"
+                                        </DropdownMenuLabel>
+                                        <DropdownMenuSeparator />
+                                        {/* Upgrade to Pro — hidden for special/pro accounts */}
+                                        {!isSpecial && !hasActivePro && (
+                                            <>
+                                                <DropdownMenuGroup>
+                                                    <DropdownMenuItem onClick={() => setShowPackagesModal(true)}>
+                                                        <Crown className="text-amber-500" />
+                                                        <span>Upgrade to Pro</span>
+                                                    </DropdownMenuItem>
+                                                </DropdownMenuGroup>
+                                                <DropdownMenuSeparator />
+                                            </>
+                                        )}
+                                        <DropdownMenuGroup>
+                                            <DropdownMenuItem onClick={() => setShowAvatarModal(true)}>
+                                                <Smile />
+                                                Change Avatar
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem onClick={() => setShowSettingsModal(true)}>
+                                                <BadgeCheck />
+                                                Account
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem onClick={() => setShowPackagesModal(true)}>
+                                                <CreditCard />
+                                                Billing
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem onClick={() => setShowSettingsModal(true)}>
+                                                <Shield />
+                                                Security
+                                            </DropdownMenuItem>
+                                        </DropdownMenuGroup>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuGroup>
+                                            <DropdownMenuItem onClick={() => router.push('/help-center')}>
+                                                <HelpCircle />
+                                                Help
+                                            </DropdownMenuItem>
+                                        </DropdownMenuGroup>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem
+                                            onClick={handleLogoutClick}
+                                            className="text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400"
                                         >
-                                            <LogIn className="w-4 h-4 mr-2" />
-                                            Sign In
-                                        </Button>
-                                    </Link>
-                                    <Link href="/sign-up">
-                                        <Button className="w-full rounded-full font-bold cursor-pointer p-6 bg-primary hover:bg-primary/90 text-primary-foreground">
-                                            Sign Up
-                                        </Button>
-                                    </Link>
-                                </div>
-                            )}
-
-                        </SidebarContent>
-                    </SidebarGroup>
-                    <SidebarGroup />
-                </SidebarContent>
-                <SidebarFooter className='bg-accent dark:bg-[oklch(0.209_0_0)]'>
-
-                    {/* Theme Toggle Button */}
-                    {/* <div className='p-5 pb-3'>
-                    <Button 
-                        onClick={toggleTheme}
-                        variant="outline" 
-                        className="w-full rounded-full font-bold cursor-pointer p-6 border-gray-200 dark:border-gray-600 hover:border-primary dark:hover:border-primary hover:text-primary dark:hover:text-primary bg-white dark:bg-[oklch(0.2478_0_0)] text-gray-900 dark:text-white"
-                    >
-                        {isDarkMode ? (
-                            <>
-                                <Sun className="w-4 h-4 mr-2" />
-                                Light Mode
-                            </>
-                        ) : (
-                            <>
-                                <Moon className="w-4 h-4 mr-2" />
-                                Dark Mode
-                            </>
-                        )}
-                    </Button>
-                </div> */}
-
-                    <div className='p-5 pt-0'>
-                        {(() => {
-                            // Direct email check - special account should NEVER see Try Pro section
-                            if (currentUser?.email === 'arpitariyanm@gmail.com') {
-                                return null; // Hide the entire section for special account
-                            }
-
-                            // For other users, check if they have Pro plan
-                            const hasActivePro = plan === 'pro' || isPro;
-
-                            return !hasActivePro ? (
+                                            <LogOut />
+                                            Log out
+                                        </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                            ) : (
+                                /* Logged-out: sign-in/up buttons (expanded) or person icon (collapsed) */
                                 <>
-                                    <h3 className='text-gray-500 dark:text-white font-bold mb-2'>Try Pro</h3>
-                                    <p className='text-gray-400 dark:text-gray-300 mb-3'>
-                                        {currentUser ?
-                                            'Upgrade for more credits, advanced models and premium features.' :
-                                            'Upgrade for image upload, smarter AI and more copilot.'}
-                                    </p>
-                                    <Button
-                                        onClick={() => setShowPackagesModal(true)}
-                                        className='cursor-pointer text-primary-foreground bg-primary hover:bg-primary/90'
-                                    >
-                                        <FiArrowUpRight /> Try Now
-                                    </Button>
+                                    <div className="group-data-[collapsible=icon]:hidden space-y-2 p-1">
+                                        <Link href="/sign-in">
+                                            <Button
+                                                variant="outline"
+                                                className="w-full rounded-full font-bold cursor-pointer p-6 border-gray-200 dark:border-gray-600 hover:border-primary dark:hover:border-primary hover:text-primary dark:hover:text-primary bg-white dark:bg-[oklch(0.2478_0_0)] text-gray-900 dark:text-white"
+                                            >
+                                                <LogIn className="w-4 h-4 mr-2" />
+                                                Sign In
+                                            </Button>
+                                        </Link>
+                                        <Link href="/sign-up">
+                                            <Button className="w-full rounded-full font-bold cursor-pointer p-6 bg-primary hover:bg-primary/90 text-primary-foreground">
+                                                Sign Up
+                                            </Button>
+                                        </Link>
+                                    </div>
+                                    <div className="hidden group-data-[collapsible=icon]:flex justify-center p-1">
+                                        <SidebarMenuButton asChild tooltip="Sign In" className="w-8 h-8 justify-center">
+                                            <a href="/sign-in">
+                                                <User className="w-5 h-5" />
+                                            </a>
+                                        </SidebarMenuButton>
+                                    </div>
                                 </>
-                            ) : null;
-                        })()}
-                    </div>
-
-                    <div className='flex items-space-between justify-between p-5'>
-                        <h2 className='text-gray-500 dark:text-white font-bold'>Contact</h2>
-                        <div className='flex items-center gap-2 text-gray-500 dark:text-gray-300'>
-
-                            <a href="https://technon.co.in/" className="hover:text-primary dark:hover:text-primary transition-colors"><TiWorld className='w-6 h-6' /></a>
-                            <a href="https://www.instagram.com/chatboxai_uiux/?igsh=amxzamd0OWxpaWhi#" className="hover:text-primary dark:hover:text-primary transition-colors"><FaInstagram className='w-5 h-5' /></a>
-                        </div>
-                    </div>
-
+                            )}
+                        </SidebarMenuItem>
+                    </SidebarMenu>
                 </SidebarFooter>
+
+                <SidebarRail />
             </Sidebar>
 
-            {/* Logout Confirmation Dialog */}
             <LogoutConfirmation
                 isOpen={showLogoutConfirmation}
                 onClose={handleLogoutCancel}
                 onConfirm={handleLogoutConfirm}
             />
-
-            {/* Packages Modal */}
             <PackagesModal
                 isOpen={showPackagesModal}
                 onClose={() => setShowPackagesModal(false)}
             />
-
-            {/* Settings Modal */}
             <SettingsModal
                 isOpen={showSettingsModal}
                 onClose={() => setShowSettingsModal(false)}
             />
-        </>
-    );
-};
+            <AvatarPickerModal
+                isOpen={showAvatarModal}
+                onClose={() => setShowAvatarModal(false)}
+                currentAvatar={selectedAvatar}
+                onSelect={handleAvatarSelect}
+            />
 
-export default AppSidebar;
+            <Dialog
+                open={!!deleteTarget}
+                onOpenChange={(open) => {
+                    if (!open && !deleteLoadingKey) {
+                        setDeleteTarget(null)
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle>Delete chat?</DialogTitle>
+                        <DialogDescription>
+                            This will permanently remove this chat from your history. This action cannot be undone.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => setDeleteTarget(null)}
+                            disabled={!!deleteLoadingKey}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="button"
+                            onClick={confirmDelete}
+                            disabled={!!deleteLoadingKey}
+                            className="bg-red-600 hover:bg-red-700"
+                        >
+                            {deleteLoadingKey ? 'Deleting...' : 'Delete Chat'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </>
+    )
+}
+
+export default AppSidebar

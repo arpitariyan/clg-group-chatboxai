@@ -1,20 +1,21 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID } from '@/services/appwrite-admin';
+import { ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { MODEL_ACCESS, getOperationCost, canAccessModel } from '@/lib/modelAccess';
 
 // Helper function to get user by email
 async function getUser(email) {
-  const { data: user, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('email', email)
-    .single();
+  const res = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+    Query.equal('email', email),
+    Query.limit(1),
+  ]);
 
-  if (error) {
+  if (res.documents.length === 0) {
     throw new Error('User not found');
   }
 
-  return user;
+  return res.documents[0];
 }
 
 // Helper function to check and reset monthly credits if needed
@@ -22,13 +23,10 @@ async function maybeResetMonthly(user) {
   if (!user.last_monthly_reset) {
     // First time, set reset date
     const resetCredits = user.plan === 'pro' ? 25000 : 5000;
-    await supabase
-      .from('users')
-      .update({
-        credits: resetCredits,
-        last_monthly_reset: new Date().toISOString().split('T')[0]
-      })
-      .eq('id', user.id);
+    await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
+      credits: resetCredits,
+      last_monthly_reset: new Date().toISOString().split('T')[0]
+    });
     return resetCredits;
   }
 
@@ -38,13 +36,10 @@ async function maybeResetMonthly(user) {
 
   if (daysDiff >= 30) {
     const resetCredits = user.plan === 'pro' ? 25000 : 5000;
-    await supabase
-      .from('users')
-      .update({
-        credits: resetCredits,
-        last_monthly_reset: now.toISOString().split('T')[0]
-      })
-      .eq('id', user.id);
+    await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
+      credits: resetCredits,
+      last_monthly_reset: now.toISOString().split('T')[0]
+    });
     return resetCredits;
   }
 
@@ -52,19 +47,9 @@ async function maybeResetMonthly(user) {
 }
 
 // Helper function to update user credits
-async function updateUser(userId, updates) {
-  const { data, error } = await supabase
-    .from('users')
-    .update(updates)
-    .eq('id', userId)
-    .select()
-    .single();
-
-  if (error) {
-    throw error;
-  }
-
-  return data;
+async function updateUser(docId, updates) {
+  const updatedDoc = await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, docId, updates);
+  return updatedDoc;
 }
 
 export async function POST(request) {
@@ -130,20 +115,17 @@ export async function POST(request) {
 
     // Deduct credits
     const newCredits = Math.max(0, user.credits - operationCost);
-    const updatedUser = await updateUser(user.id, { credits: newCredits });
+    const updatedUser = await updateUser(user.$id, { credits: newCredits });
 
     // Log the operation (optional, for analytics)
     try {
-      await supabase
-        .from('usage_logs')
-        .insert({
-          user_id: user.id,
-          model: model,
-          operation_type: operation_type,
-          credits_consumed: operationCost,
-          credits_remaining: newCredits,
-          created_at: new Date().toISOString()
-        });
+      await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
+        user_id: user.$id,
+        model: model,
+        operation_type: operation_type,
+        credits_consumed: operationCost,
+        credits_remaining: newCredits
+      });
     } catch (logError) {
       console.error('Failed to log usage:', logError);
       // Don't fail the request for logging errors

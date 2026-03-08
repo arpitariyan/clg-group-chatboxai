@@ -1,6 +1,5 @@
 'use client'
 
-import { supabase } from '@/services/supabase'
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import AuthGuard from '@/app/_components/AuthGuard'
@@ -27,6 +26,13 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+
+const getProxyImageUrl = (fileId, userEmail, libId) => {
+    const params = new URLSearchParams({ fileId })
+    if (userEmail) params.set('userEmail', userEmail)
+    if (libId) params.set('libId', libId)
+    return `/api/generate-image/file?${params.toString()}`
+}
 
 function Library() {
     const { currentUser } = useAuth()
@@ -129,117 +135,69 @@ function Library() {
                 return
             }
 
-            // Run all 3 queries in parallel — treat each error as non-fatal
-            const [libraryResponse, imageGenResponse, websiteProjectsResponse] = await Promise.all([
-                supabase
-                    .from('Library')
-                    .select(`*, Chats(*)`)
-                    .eq('userEmail', currentUser.email)
-                    .order('created_at', { ascending: false }),
+            let libraryDocs = [], imageGenDocs = [], websiteProjectsDocs = [], chatsMap = {};
 
-                supabase
-                    .from('ImageGeneration')
-                    .select('*')
-                    .eq('userEmail', currentUser.email)
-                    .order('created_at', { ascending: false }),
+            const response = await fetch(`/api/library/history?email=${encodeURIComponent(currentUser.email)}`, {
+                method: 'GET',
+                cache: 'no-store'
+            });
 
-                supabase
-                    .from('website_projects')
-                    .select('*')
-                    .eq('user_email', currentUser.email)
-                    .order('created_at', { ascending: false })
-            ]);
-
-            // Log non-timeout errors; treat timeout silently
-            const logIfRealError = (label, error) => {
-                if (!error) return;
-                const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
-                if (!isTimeout) console.warn(`[Library] ${label}:`, error.message);
-            };
-
-            logIfRealError('Library query error', libraryResponse.error);
-            logIfRealError('ImageGeneration query error', imageGenResponse.error);
-            logIfRealError('WebsiteProjects query error', websiteProjectsResponse.error);
-
-            const isAnyTimeout = (
-                (libraryResponse.error?.code === 'TIMEOUT' || libraryResponse.error?.message?.includes('timeout')) ||
-                (imageGenResponse.error?.code === 'TIMEOUT' || imageGenResponse.error?.message?.includes('timeout')) ||
-                (websiteProjectsResponse.error?.code === 'TIMEOUT' || websiteProjectsResponse.error?.message?.includes('timeout'))
-            );
-
-            if (isAnyTimeout) {
-                setDbError(true);
-                console.warn('[Library] Supabase is unreachable — project may be paused. Visit https://supabase.com/dashboard to restore it.');
-            } else {
+            if (response.ok) {
+                const payload = await response.json();
+                libraryDocs = payload.libraryDocs || [];
+                imageGenDocs = payload.imageGenDocs || [];
+                websiteProjectsDocs = payload.websiteProjectsDocs || [];
+                chatsMap = payload.chatsMap || {};
                 setDbError(false);
+            } else {
+                const payload = await response.json().catch(() => ({}));
+                console.warn('[Library] History API error:', payload?.error || response.statusText);
+                setDbError(true);
             }
 
-            const libraryDataItems = libraryResponse.error ? [] : (libraryResponse.data || []);
-            const imageGenDataItems = imageGenResponse.error ? [] : (imageGenResponse.data || []);
-            const websiteProjectsDataItems = websiteProjectsResponse.error ? [] : (websiteProjectsResponse.data || []);
+            const libraryDataItems = libraryDocs;
+            const imageGenDataItems = imageGenDocs;
+            const websiteProjectsDataItems = websiteProjectsDocs;
 
             const libraryItems = libraryDataItems.map(item => ({
                 ...item,
+                created_at: item.created_at || item.$createdAt,
                 dataType: 'search',
                 title: item.searchInput,
-                subtitle: `${item.type === 'research' ? 'Research' : 'Search'} • ${formatDate(item.created_at)}`
+                subtitle: `${item.type === 'research' ? 'Research' : 'Search'} • ${formatDate(item.created_at || item.$createdAt)}`,
+                Chats: chatsMap[item.libId] || []
             }));
 
-            const imageGenItems = imageGenDataItems.map(item => ({
-                ...item,
-                dataType: 'image-generation',
-                title: item.prompt,
-                subtitle: `Image Generation • ${formatDate(item.created_at)}`,
-                type: 'image-generation',
-                searchInput: item.prompt
-            }));
+            const imageGenItems = imageGenDataItems.map(item => {
+                const normalizedLibId = item.libId || item.$id
+                const resolvedImageUrl = item.publicUrl
+                    || (item.generatedImagePath ? getProxyImageUrl(item.generatedImagePath, item.userEmail || currentUser?.email, normalizedLibId) : '')
+
+                return {
+                    ...item,
+                    libId: normalizedLibId,
+                    publicUrl: resolvedImageUrl,
+                    created_at: item.created_at || item.$createdAt,
+                    dataType: 'image-generation',
+                    title: item.prompt,
+                    subtitle: `Image Generation • ${formatDate(item.created_at || item.$createdAt)}`,
+                    type: 'image-generation',
+                    searchInput: item.prompt
+                }
+            });
 
             const websiteProjectItems = websiteProjectsDataItems.map(item => ({
                 ...item,
+                created_at: item.created_at || item.$createdAt,
                 dataType: 'website-builder',
                 title: item.title || item.initial_prompt || 'Website Project',
-                subtitle: `Website Builder • ${formatDate(item.created_at)}`,
+                subtitle: `Website Builder • ${formatDate(item.created_at || item.$createdAt)}`,
                 type: 'website-builder',
                 searchInput: item.title || item.initial_prompt,
-                libId: item.id
+                libId: item.$id
             }));
 
             let combinedData = [...libraryItems, ...imageGenItems, ...websiteProjectItems];
-
-            // If Supabase returned nothing (DB down), fall back to localStorage searches
-            // ChatBoxAiInput saves each search as `search_${libId}` in localStorage
-            if (libraryItems.length === 0) {
-                try {
-                    const localItems = [];
-                    for (let i = 0; i < localStorage.length; i++) {
-                        const key = localStorage.key(i);
-                        if (key && key.startsWith('search_')) {
-                            try {
-                                const raw = localStorage.getItem(key);
-                                const item = JSON.parse(raw);
-                                // Only show searches belonging to the current user
-                                if (item && (item.userEmail === currentUser.email || item.userEmail === 'anonymous')) {
-                                    localItems.push({
-                                        ...item,
-                                        dataType: 'search',
-                                        title: item.searchInput || '(untitled)',
-                                        subtitle: `${item.type === 'research' ? 'Research' : 'Search'} • (offline)`,
-                                        created_at: item.created_at || new Date().toISOString(),
-                                        Chats: [],
-                                        _fromLocalStorage: true,
-                                    });
-                                }
-                            } catch (_) { /* skip malformed items */ }
-                        }
-                    }
-                    if (localItems.length > 0) {
-                        console.info(`[Library] Supabase unreachable — showing ${localItems.length} item(s) from localStorage`);
-                        combinedData = [...localItems, ...imageGenItems, ...websiteProjectItems];
-                    }
-                } catch (lsErr) {
-                    console.warn('[Library] localStorage fallback failed:', lsErr);
-                }
-            }
 
             // Sort by date (newest first)
             combinedData.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -270,68 +228,35 @@ function Library() {
                 console.error('Error: User email is missing for delete operation')
                 return
             }
-            
-            if (dataType === 'image-generation') {
-                // Delete image generation entry
-                const { error } = await supabase
-                    .from('ImageGeneration')
-                    .delete()
-                    .eq('libId', libId)
-                    .eq('userEmail', currentUser.email)
 
-                if (error) {
-                    // Enhanced error logging
-                    console.error('Error deleting image generation entry:', {
-                        message: error.message,
-                        details: error.details,
-                        hint: error.hint,
-                        code: error.code,
-                        fullError: JSON.stringify(error, null, 2),
-                        libId: libId,
-                        userEmail: currentUser.email
-                    })
-                    return
-                }
-            } else {
-                // Delete search/research entry (original logic)
-                // First delete related chats
-                const { error: chatsError } = await supabase
-                    .from('Chats')
-                    .delete()
-                    .eq('libId', libId)
-                
-                if (chatsError) {
-                    console.error('Error deleting related chats:', {
-                        message: chatsError.message,
-                        details: chatsError.details,
-                        hint: chatsError.hint,
-                        code: chatsError.code,
-                        fullError: JSON.stringify(chatsError, null, 2),
-                        libId: libId
-                    })
-                    // Continue with library deletion even if chats deletion fails
-                }
-                
-                // Then delete the library entry
-                const { error } = await supabase
-                    .from('Library')
-                    .delete()
-                    .eq('libId', libId)
-                    .eq('userEmail', currentUser.email)
+            const response = await fetch('/api/library/delete', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    libId,
+                    dataType,
+                    userEmail: currentUser.email,
+                }),
+            });
 
-                if (error) {
-                    // Enhanced error logging
-                    console.error('Error deleting library entry:', {
-                        message: error.message,
-                        details: error.details,
-                        hint: error.hint,
-                        code: error.code,
-                        fullError: JSON.stringify(error, null, 2),
-                        libId: libId,
-                        userEmail: currentUser.email
-                    })
-                    return
-                }
+            const result = await response.json();
+
+            if (!response.ok || !result?.success) {
+                console.error('Error deleting library entry:', {
+                    libId,
+                    dataType,
+                    userEmail: currentUser.email,
+                    details: result?.details || result?.error || 'Unknown delete error',
+                });
+                return;
+            }
+
+            if (Array.isArray(result?.warnings) && result.warnings.length > 0) {
+                console.warn('Delete completed with warnings:', {
+                    libId,
+                    dataType,
+                    warnings: result.warnings,
+                });
             }
 
             // Remove from local state only if deletion was successful
@@ -340,7 +265,7 @@ function Library() {
         } catch (error) {
             // Enhanced error logging for unexpected errors
             console.error('Error in handleDelete:', {
-                message: error.message,
+                message: error?.message || 'Unknown delete error',
                 stack: error.stack,
                 libId: libId,
                 dataType: dataType,
@@ -469,15 +394,7 @@ function Library() {
                         <div className="flex-1 min-w-0">
                             <p className="font-medium text-sm">Database Temporarily Unavailable</p>
                             <p className="text-xs mt-0.5 opacity-80">
-                                Cannot connect to Supabase. Your data still exists — the database may be paused.{' '}
-                                <a
-                                    href="https://supabase.com/dashboard"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="underline font-medium"
-                                >
-                                    Resume your project →
-                                </a>
+                                Cannot connect to the database. Your data still exists — please try again later.
                             </p>
                         </div>
                     </div>
@@ -624,10 +541,10 @@ function Library() {
                                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
                                         <div className="flex gap-3 flex-1 min-w-0">
                                             {/* Thumbnail for completed image generations */}
-                                            {item.dataType === 'image-generation' && item.status === 'completed' && item.generatedImageUrl && (
+                                            {item.dataType === 'image-generation' && item.status === 'completed' && item.publicUrl && (
                                                 <div className="w-16 h-16 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800 shrink-0">
                                                     <img 
-                                                        src={item.generatedImageUrl} 
+                                                        src={item.publicUrl} 
                                                         alt="Generated" 
                                                         className="w-full h-full object-cover"
                                                     />

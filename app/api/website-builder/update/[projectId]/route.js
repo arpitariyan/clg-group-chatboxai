@@ -1,10 +1,18 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID } from '@/services/appwrite-admin';
+import {
+    createWebsiteVersionDocument,
+    ensureProjectOwnership,
+    updateWebsiteProjectCode
+} from '@/lib/website-builder-server-utils';
+import {
+    WEBSITE_PROJECTS_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function POST(request, { params }) {
     try {
         const { projectId } = await params;
-        const { code } = await request.json();
+        const { code, userEmail } = await request.json();
 
         if (!projectId) {
             return NextResponse.json(
@@ -20,14 +28,18 @@ export async function POST(request, { params }) {
             );
         }
 
-        // Get current project to verify it exists
-        const { data: project, error: fetchError } = await supabase
-            .from('website_projects')
-            .select('id, project_name, current_version_id')
-            .eq('id', projectId)
-            .single();
+        if (!userEmail) {
+            return NextResponse.json(
+                { error: 'User email is required' },
+                { status: 401 }
+            );
+        }
 
-        if (fetchError) {
+        // Get current project to verify it exists
+        let project;
+        try {
+            project = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId);
+        } catch (fetchError) {
             console.error('Error fetching project:', fetchError);
             return NextResponse.json(
                 { error: 'Project not found', details: fetchError.message },
@@ -35,18 +47,21 @@ export async function POST(request, { params }) {
             );
         }
 
-        // Create a new version entry
-        const { data: newVersion, error: versionError } = await supabase
-            .from('website_versions')
-            .insert({
-                project_id: projectId,
-                code: code,
-                created_at: new Date().toISOString()
-            })
-            .select()
-            .single();
+        if (!ensureProjectOwnership(project, userEmail)) {
+            return NextResponse.json(
+                { error: 'You are not allowed to update this project' },
+                { status: 403 }
+            );
+        }
 
-        if (versionError) {
+        // Create a new version entry
+        let newVersion;
+        try {
+            newVersion = await createWebsiteVersionDocument({
+                projectId,
+                code
+            });
+        } catch (versionError) {
             console.error('Error creating version:', versionError);
             return NextResponse.json(
                 { error: 'Failed to create version', details: versionError.message },
@@ -55,16 +70,9 @@ export async function POST(request, { params }) {
         }
 
         // Update the project with new code and version
-        const { error: updateError } = await supabase
-            .from('website_projects')
-            .update({
-                current_code: code,
-                current_version_id: newVersion.id,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', projectId);
-
-        if (updateError) {
+        try {
+            await updateWebsiteProjectCode(projectId, code, newVersion.$id);
+        } catch (updateError) {
             console.error('Error updating project:', updateError);
             return NextResponse.json(
                 { error: 'Failed to update project', details: updateError.message },
@@ -75,7 +83,7 @@ export async function POST(request, { params }) {
         return NextResponse.json({
             success: true,
             message: `"${project.project_name}" updated successfully!`,
-            version_id: newVersion.id
+            version_id: newVersion.$id
         });
 
     } catch (error) {

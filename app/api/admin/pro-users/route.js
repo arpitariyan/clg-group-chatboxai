@@ -1,31 +1,48 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID } from '@/services/appwrite-collections';
 
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const search = searchParams.get('search') || '';
 
-    // Build query for pro users
-    let query = supabase
-      .from('Users')
-      .select('*')
-      .eq('plan', 'pro');
-
-    // Apply search filter
     if (search) {
-      query = query.or(`email.ilike.%${search}%,name.ilike.%${search}%`);
+      // Search by email or name among pro users
+      const [emailRes, nameRes] = await Promise.all([
+        databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+          Query.equal('plan', 'pro'),
+          Query.search('email', search),
+          Query.limit(200),
+        ]),
+        databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+          Query.equal('plan', 'pro'),
+          Query.search('name', search),
+          Query.limit(200),
+        ]),
+      ]);
+      const seen = new Set();
+      const merged = [];
+      for (const doc of [...emailRes.documents, ...nameRes.documents]) {
+        if (!seen.has(doc.$id)) {
+          seen.add(doc.$id);
+          merged.push(doc);
+        }
+      }
+      merged.sort((a, b) =>
+        new Date(b.subscription_start_date || 0) - new Date(a.subscription_start_date || 0)
+      );
+      return NextResponse.json({ users: merged });
     }
 
-    // Order by subscription_start_date descending
-    query = query.order('subscription_start_date', { ascending: false });
-
-    const { data: users, error } = await query;
-
-    if (error) throw error;
+    const res = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('plan', 'pro'),
+      Query.orderDesc('subscription_start_date'),
+      Query.limit(200),
+    ]);
 
     return NextResponse.json({
-      users: users || [],
+      users: res.documents,
     });
   } catch (error) {
     console.error('Error fetching pro users:', error);

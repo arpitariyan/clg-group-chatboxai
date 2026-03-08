@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import {
+  LIBRARY_COLLECTION_ID,
+  IMAGE_GENERATION_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function DELETE(request) {
   try {
@@ -12,31 +16,32 @@ export async function DELETE(request) {
       );
     }
 
-    let error;
-
-    // Delete based on type
     if (type === 'search' || type === 'research') {
-      // Delete from Library table
-      const { error: deleteError } = await supabase
-        .from('Library')
-        .delete()
-        .eq('libId', id);
-      error = deleteError;
+      // Find in Library by libId
+      const res = await databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
+        Query.equal('libId', id),
+        Query.limit(1),
+      ]);
+      if (res.documents.length === 0) {
+        return NextResponse.json({ error: 'Entry not found' }, { status: 404 });
+      }
+      await databases.deleteDocument(DB_ID, LIBRARY_COLLECTION_ID, res.documents[0].$id);
     } else if (type === 'image') {
-      // Delete from ImageGeneration table
-      const { error: deleteError } = await supabase
-        .from('ImageGeneration')
-        .delete()
-        .eq('libId', id);
-      error = deleteError;
+      // Find in ImageGeneration by libId
+      const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+        Query.equal('libId', id),
+        Query.limit(1),
+      ]);
+      if (res.documents.length === 0) {
+        return NextResponse.json({ error: 'Entry not found' }, { status: 404 });
+      }
+      await databases.deleteDocument(DB_ID, IMAGE_GENERATION_COLLECTION_ID, res.documents[0].$id);
     } else {
       return NextResponse.json(
         { error: 'Invalid history type' },
         { status: 400 }
       );
     }
-
-    if (error) throw error;
 
     return NextResponse.json({
       success: true,

@@ -9,9 +9,9 @@ export const AIModelsOption = [
     },
     {
         id: 2,
-        name: 'GPT 5',
-        desc: 'OpenAI GPT-5 - Compact & Efficient',
-        modelApi: 'provider-6/gpt-oss-20b',
+        name: 'Llama 4 Maverick',
+        desc: 'Meta Llama 4 Maverick - Advanced Intelligence',
+        modelApi: 'provider-6/llama-4-maverick',
         provider: 'a4f',
         isPro: true // Pro plan only
     },
@@ -100,7 +100,7 @@ export const AIModelsOption = [
         id: 12,
         name: 'GPT 4o Mini',
         desc: 'OpenAI GPT-4o Mini - Optimized Performance',
-        modelApi: 'provider-8/gpt-oss-20b',
+        modelApi: 'provider-8/gpt-4o-mini',
         provider: 'a4f',
         isPro: true // Pro plan only
     },
@@ -144,7 +144,45 @@ export const AIModelsOption = [
         provider: 'a4f',
         isPro: true // Pro plan only
     },
+    {
+        id: 18,
+        name: 'Qwen3 VL 30B Thinking',
+        desc: 'OpenRouter Qwen3 VL 30B A3B Thinking',
+        modelApi: 'qwen/qwen3-vl-30b-a3b-thinking',
+        provider: 'openrouter',
+        isPro: true // Pro plan only
+    },
+    {
+        id: 19,
+        name: 'Llama 4 Scout (Free)',
+        desc: 'OpenRouter Meta Llama 4 Scout Free',
+        modelApi: 'meta-llama/llama-4-scout:free',
+        provider: 'openrouter',
+        isPro: false // Free plan can use
+    },
+    {
+        id: 20,
+        name: 'Qwen3 Coder (Free)',
+        desc: 'OpenRouter Qwen3 Coder Free',
+        modelApi: 'qwen/qwen3-coder:free',
+        provider: 'openrouter',
+        isPro: false // Free plan can use
+    },
+    {
+        id: 21,
+        name: 'GLM 4.5 Air (Free)',
+        desc: 'OpenRouter Z.ai GLM 4.5 Air Free',
+        modelApi: 'z-ai/glm-4.5-air:free',
+        provider: 'openrouter',
+        isPro: false // Free plan can use
+    },
 ]
+
+const VERIFIED_FREE_CODING_MODEL = 'z-ai/glm-4.5-air:free';
+
+function getPreferredFreeCodingModel() {
+    return AIModelsOption.find((model) => model.modelApi === VERIFIED_FREE_CODING_MODEL) || null;
+}
 
 // Utility function to get a random model from the list (excluding Auto)
 // If isPro is false, only return free models; if true, return any model
@@ -160,6 +198,12 @@ export function getRandomModel(isPro = true) {
     if (selectableModels.length === 0) {
         console.warn('No selectable models found, using first non-auto model');
         selectableModels = AIModelsOption.filter(model => model.modelApi !== 'auto');
+    }
+
+    // For free users, prefer the runtime-verified coding model for stability.
+    if (!isPro) {
+        const preferred = getPreferredFreeCodingModel();
+        if (preferred) return preferred;
     }
 
     const randomIndex = Math.floor(Math.random() * selectableModels.length);

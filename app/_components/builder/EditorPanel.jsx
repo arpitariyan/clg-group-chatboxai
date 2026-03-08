@@ -452,8 +452,8 @@ export default function EditorPanel({ selectedElement, onUpdate, onClose }) {
     const isPositioned = values.styles.position && values.styles.position !== 'static'
 
     return (
-        <div className='absolute top-4 right-4 w-96 bg-white rounded-lg shadow-2xl border border-gray-200 z-50 flex flex-col' style={{ maxHeight: 'calc(100vh - 2rem)' }}>
-        <div className='flex justify-between items-center p-4 border-b border-gray-200 bg-linear-to-r from-indigo-50 to-purple-50 shrink-0'>
+        <div className='fixed inset-x-0 bottom-0 top-14 sm:inset-x-auto sm:top-4 sm:right-4 sm:bottom-auto w-full sm:w-96 bg-white rounded-t-xl sm:rounded-lg shadow-2xl border border-gray-200 z-50 flex flex-col' style={{ maxHeight: 'calc(100vh - 3.5rem)' }}>
+        <div className='flex justify-between items-center p-3 sm:p-4 border-b border-gray-200 bg-linear-to-r from-indigo-50 to-purple-50 shrink-0'>
                 <div>
                     <h3 className='font-semibold text-gray-800'>Edit Element</h3>
                     {/* <p className='text-xs text-gray-500 mt-0.5'>{values.tagName?.toLowerCase()}</p> */}

@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import {
+  LIBRARY_COLLECTION_ID,
+  IMAGE_GENERATION_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function DELETE(request) {
   try {
@@ -32,40 +31,48 @@ export async function DELETE(request) {
     let deletedCount = 0;
     const errors = [];
 
-    // Delete from Library table
+    // Delete from Library table by libId
     if (libraryIds.length > 0) {
-      const { error: libraryError, count } = await supabase
-        .from('Library')
-        .delete()
-        .in('id', libraryIds);
-
-      if (libraryError) {
-        errors.push(`Library deletion error: ${libraryError.message}`);
-      } else {
-        deletedCount += count || libraryIds.length;
+      try {
+        const res = await databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
+          Query.equal('libId', libraryIds),
+          Query.limit(libraryIds.length + 10),
+        ]);
+        await Promise.all(
+          res.documents.map(doc =>
+            databases.deleteDocument(DB_ID, LIBRARY_COLLECTION_ID, doc.$id)
+          )
+        );
+        deletedCount += res.documents.length;
+      } catch (err) {
+        errors.push(`Library deletion error: ${err.message}`);
       }
     }
 
-    // Delete from ImageGeneration table
+    // Delete from ImageGeneration table by libId
     if (imageIds.length > 0) {
-      const { error: imageError, count } = await supabase
-        .from('ImageGeneration')
-        .delete()
-        .in('id', imageIds);
-
-      if (imageError) {
-        errors.push(`Image deletion error: ${imageError.message}`);
-      } else {
-        deletedCount += count || imageIds.length;
+      try {
+        const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+          Query.equal('libId', imageIds),
+          Query.limit(imageIds.length + 10),
+        ]);
+        await Promise.all(
+          res.documents.map(doc =>
+            databases.deleteDocument(DB_ID, IMAGE_GENERATION_COLLECTION_ID, doc.$id)
+          )
+        );
+        deletedCount += res.documents.length;
+      } catch (err) {
+        errors.push(`Image deletion error: ${err.message}`);
       }
     }
 
     if (errors.length > 0) {
       return NextResponse.json(
-        { 
+        {
           error: 'Some deletions failed',
           details: errors,
-          deletedCount 
+          deletedCount,
         },
         { status: 207 } // Multi-Status
       );
@@ -74,7 +81,7 @@ export async function DELETE(request) {
     return NextResponse.json({
       success: true,
       message: `Successfully deleted ${deletedCount} entries`,
-      deletedCount
+      deletedCount,
     });
   } catch (error) {
     console.error('Error in bulk delete:', error);

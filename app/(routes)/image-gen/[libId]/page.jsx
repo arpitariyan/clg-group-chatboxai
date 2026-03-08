@@ -1,9 +1,16 @@
 'use client'
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Download, Copy, RefreshCw, XCircle, Crown, AlertTriangle, Send, Loader2, Cpu } from 'lucide-react'
+import { Download, Copy, RefreshCw, XCircle, Crown, AlertTriangle, ArrowUp, Loader2, Cpu } from 'lucide-react'
+import {
+    IMAGE_MODELS,
+    DEFAULT_MODEL_ID,
+    getModelById,
+    getDefaultModelForProvider,
+    getProviderIdByModelId,
+} from '@/lib/hf-image-config'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -12,51 +19,34 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { toast } from 'react-toastify'
+import { toast } from '@/lib/alert'
 import { useAuth } from '@/contexts/AuthContext'
 import { v4 as uuidv4 } from 'uuid'
 
-const IMAGE_MODELS = [
-    // {
-    //     id: "chatboxai",
-    //     name: "ChatBoxAI v1.0",
-    //     desc: "Your custom ChatBoxAI model - high-quality image generation",
-    //     isFeatured: true
-    // },
-    {
-        id: "provider-4/imagen-4",
-        name: "Imagen 4",
-        desc: "Google's latest high-quality image generation model"
-    },
-    {
-        id: "provider-2/flux-schnell",
-        name: "Flux Schnell",
-        desc: "Fast and efficient image generation model"
-    },
-    {
-        id: "provider-4/z-image-turbo",
-        name: "Z-Image Turbo",
-        desc: "Z-Image Turbo is a text-to-image model that can generate high-quality images from text prompts."
-    },
-    {
-        id: "provider-4/flux-2-klein-9b",
-        name: "Flux 2 Klein 9B",
-        desc: "Flux 2 Klein 9B is a text-to-image model that can generate high-quality images from text prompts."
+const getRatioDimensions = (modelId, ratio) => {
+    const model = getModelById(modelId)
+    const found = model.ratios.find(r => r.value === ratio);
+    return found ? { width: found.width, height: found.height } : model.ratios[0];
+}
+
+const DEFAULT_IMAGE_MODEL_ID = getDefaultModelForProvider('leonardo')?.id || DEFAULT_MODEL_ID;
+
+const buildProxyImageUrl = (fileId, userEmail, libId) => {
+    const params = new URLSearchParams({ fileId })
+    if (userEmail) params.set('userEmail', userEmail)
+    if (libId) params.set('libId', libId)
+    return `/api/generate-image/file?${params.toString()}`
+}
+
+const resolveGenerationImageUrl = (generation) => {
+    if (!generation) return ''
+
+    if (generation.displayUrl) return generation.displayUrl
+    if (generation.publicUrl) return generation.publicUrl
+    if (generation.generatedImagePath) {
+        return buildProxyImageUrl(generation.generatedImagePath, generation.userEmail, generation.libId)
     }
-]
-
-const ASPECT_RATIOS = [
-    { label: "1:1 (Square)", value: "1:1", width: 1024, height: 1024 },
-    { label: "16:9 (Landscape)", value: "16:9", width: 1344, height: 768 },
-    { label: "9:16 (Portrait)", value: "9:16", width: 768, height: 1344 },
-    { label: "4:3 (Standard)", value: "4:3", width: 1024, height: 768 },
-    { label: "3:4 (Portrait)", value: "3:4", width: 768, height: 1024 },
-    { label: "21:9 (Ultrawide)", value: "21:9", width: 1344, height: 576 },
-]
-
-const getRatioDimensions = (ratio) => {
-    const found = ASPECT_RATIOS.find(r => r.value === ratio)
-    return found ? { width: found.width, height: found.height } : { width: 1024, height: 1024 }
+    return ''
 }
 
 export default function ImageGenerationResult() {
@@ -71,21 +61,74 @@ export default function ImageGenerationResult() {
     const [planLoading, setPlanLoading] = useState(true)
     const [newPrompt, setNewPrompt] = useState('')
     const [isSubmittingPrompt, setIsSubmittingPrompt] = useState(false)
-    const [selectedModel, setSelectedModel] = useState('provider-4/flux-schnell')
-    const [selectedRatio, setSelectedRatio] = useState('1:1')
+    const [selectedModel, setSelectedModel] = useState(DEFAULT_IMAGE_MODEL_ID)
+    const [selectedRatio, setSelectedRatio] = useState(getModelById(DEFAULT_IMAGE_MODEL_ID).ratios[0].value)
 
-    const latestGeneration = useMemo(() => generations[generations.length - 1], [generations])
+    const latestGeneration = useMemo(() => generations[0], [generations])
 
-    const upsertGeneration = useCallback((libId, data) => {
+    const normalizeGeneration = useCallback((generation) => ({
+        ...generation,
+        entryId: generation?.entryId || generation?.$id || generation?.libId,
+        resolvedImageUrl: resolveGenerationImageUrl(generation),
+    }), [])
+
+    const dedupeGenerations = useCallback((items) => {
+        const byId = new Map()
+
+        for (const item of items) {
+            const id = item?.entryId || item?.$id || item?.libId
+            if (!id) continue
+
+            const normalized = { ...item, entryId: id }
+            const existing = byId.get(id)
+            if (!existing) {
+                byId.set(id, normalized)
+                continue
+            }
+
+            const existingTime = new Date(existing?.created_at || existing?.$createdAt || existing?.clientCreatedAt || 0).getTime()
+            const nextTime = new Date(normalized?.created_at || normalized?.$createdAt || normalized?.clientCreatedAt || 0).getTime()
+
+            // Keep the newest version when same entry appears from local optimistic + server polling.
+            byId.set(id, nextTime >= existingTime ? { ...existing, ...normalized } : { ...normalized, ...existing })
+        }
+
+        return Array.from(byId.values())
+    }, [])
+
+    const sortGenerations = useCallback((items) => {
+        return dedupeGenerations(items).sort((a, b) => {
+            const aTime = new Date(a?.created_at || a?.$createdAt || a?.clientCreatedAt || 0).getTime()
+            const bTime = new Date(b?.created_at || b?.$createdAt || b?.clientCreatedAt || 0).getTime()
+            return bTime - aTime
+        })
+    }, [dedupeGenerations])
+
+    // Derive current model config reactively
+    const currentModelConfig = useMemo(() => {
+        return getModelById(selectedModel)
+    }, [selectedModel])
+
+    // Reset ratio when the model changes.
+    useEffect(() => {
+        setSelectedRatio(currentModelConfig.ratios[0].value)
+    }, [currentModelConfig.id])
+
+    const upsertGeneration = useCallback((entryId, data) => {
         setGenerations(prev => {
-            const idx = prev.findIndex(item => item.libId === libId)
+            const idx = prev.findIndex(item => item.entryId === entryId)
+            const nextEntryId = data?.entryId || entryId
             if (idx !== -1) {
                 const updated = [...prev]
-                updated[idx] = { ...updated[idx], ...data, libId }
-                return updated
+                updated[idx] = { ...updated[idx], ...data, entryId: nextEntryId }
+                return sortGenerations(updated)
             }
-            return [...prev, { ...data, libId, clientCreatedAt: Date.now() }]
+            return sortGenerations([...prev, { ...data, entryId: nextEntryId, clientCreatedAt: Date.now() }])
         })
+    }, [sortGenerations])
+
+    const removeGeneration = useCallback((entryId) => {
+        setGenerations(prev => prev.filter(item => item.entryId !== entryId))
     }, [])
 
     const fetchUserPlan = useCallback(async () => {
@@ -108,28 +151,18 @@ export default function ImageGenerationResult() {
 
     const fetchGenerationData = useCallback(async (targetLibId, { isInitial = false } = {}) => {
         try {
-            const response = await fetch(`/api/generate-image?libId=${targetLibId}`)
+            const emailQuery = currentUser?.email ? `&userEmail=${encodeURIComponent(currentUser.email)}` : ''
+            const response = await fetch(`/api/generate-image?libId=${targetLibId}${emailQuery}`)
 
             if (!response.ok) {
-                if (response.status === 404) {
-                    upsertGeneration(targetLibId, {
-                        status: 'generating',
-                        prompt: '',
-                        selectedModel: '',
-                        width: 0,
-                        height: 0,
-                        aspectRatio: ''
-                    })
-                    if (isInitial) {
-                        setInitialLoading(false)
-                    }
-                    return
-                }
                 throw new Error('Failed to fetch generation data')
             }
 
             const data = await response.json()
-            upsertGeneration(targetLibId, { ...data, libId: targetLibId })
+            const incoming = Array.isArray(data?.generations)
+                ? data.generations.map(normalizeGeneration)
+                : []
+            setGenerations(sortGenerations(incoming))
 
             if (isInitial) {
                 setInitialLoading(false)
@@ -140,7 +173,7 @@ export default function ImageGenerationResult() {
                 setInitialLoading(false)
             }
         }
-    }, [upsertGeneration])
+    }, [currentUser?.email, normalizeGeneration, sortGenerations])
 
     useEffect(() => {
         if (!conversationId) return
@@ -153,41 +186,42 @@ export default function ImageGenerationResult() {
 
     useEffect(() => {
         const interval = setInterval(() => {
-            const pendingIds = generations
-                .filter(gen => gen.status === 'generating')
-                .map(gen => gen.libId)
-
-            pendingIds.forEach(id => fetchGenerationData(id))
+            const hasPending = generations.some(gen => gen.status === 'generating')
+            if (hasPending && conversationId) {
+                fetchGenerationData(conversationId)
+            }
         }, 2000)
 
         return () => clearInterval(interval)
-    }, [generations, fetchGenerationData])
+    }, [generations, conversationId, fetchGenerationData])
 
-    const handleDownload = async (generation) => {
-        if (!generation?.generatedImageUrl) return
+    const handleDownload = (generation) => {
+        const imageUrl = generation?.resolvedImageUrl || resolveGenerationImageUrl(generation)
+        if (!imageUrl) return
 
         try {
-            const response = await fetch(generation.generatedImageUrl)
-            const blob = await response.blob()
-            const url = window.URL.createObjectURL(blob)
+            // Use /download endpoint — sets Content-Disposition: attachment so browser saves the file.
+            // Avoids blob fetch which fails due to CORS restrictions on the admin-mode URL.
+            const downloadUrl = imageUrl.replace('/view?', '/download?')
             const a = document.createElement('a')
-            a.href = url
-            a.download = `generated-image-${generation.libId}.png`
+            a.href = downloadUrl
+            a.download = `generated-image-${generation.entryId || generation.libId}.png`
+            a.target = '_blank'
             document.body.appendChild(a)
             a.click()
-            window.URL.revokeObjectURL(url)
             document.body.removeChild(a)
-            toast.success('Image downloaded successfully!')
+            toast.success('Downloading image...')
         } catch (error) {
             toast.error('Failed to download image')
         }
     }
 
     const handleCopyImageUrl = async (generation) => {
-        if (!generation?.generatedImageUrl) return
+        const imageUrl = generation?.resolvedImageUrl || resolveGenerationImageUrl(generation)
+        if (!imageUrl) return
 
         try {
-            await navigator.clipboard.writeText(generation.generatedImageUrl)
+            await navigator.clipboard.writeText(imageUrl)
             toast.success('Image URL copied to clipboard!')
         } catch (error) {
             toast.error('Failed to copy URL')
@@ -202,7 +236,22 @@ export default function ImageGenerationResult() {
             return
         }
 
-        setRegeneratingId(generation.libId)
+        const providerToUse = generation.provider || getProviderIdByModelId(generation.model)
+
+        // Show generating state immediately — before the API call starts
+        const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        upsertGeneration(tempId, {
+            libId: conversationId,
+            prompt: generation.prompt,
+            model: generation.model,
+            provider: providerToUse,
+            width: generation.width,
+            height: generation.height,
+            status: 'generating',
+            publicUrl: '',
+            isLocalPending: true,
+        })
+        setRegeneratingId(generation.entryId)
         try {
             const response = await fetch('/api/generate-image', {
                 method: 'POST',
@@ -211,11 +260,11 @@ export default function ImageGenerationResult() {
                 },
                 body: JSON.stringify({
                     prompt: generation.prompt,
-                    model: generation.selectedModel,
+                    provider: providerToUse,
+                    model: generation.model,
                     width: generation.width,
                     height: generation.height,
-                    referenceImage: generation.referenceImage,
-                    libId: generation.libId,
+                    libId: conversationId,
                     userEmail: currentUser?.email
                 }),
             })
@@ -223,18 +272,26 @@ export default function ImageGenerationResult() {
             const responseData = await response.json()
 
             if (response.ok) {
-                toast.success('Regenerating image...')
-                upsertGeneration(generation.libId, { status: 'generating' })
                 fetchUserPlan()
+                // Update directly from API response so image appears instantly
+                if (responseData.generation) {
+                    upsertGeneration(tempId, normalizeGeneration(responseData.generation))
+                    toast.success('Image regenerated!')
+                } else {
+                    removeGeneration(tempId)
+                    fetchGenerationData(conversationId)
+                }
             } else {
+                removeGeneration(tempId)
                 if (responseData.limitExceeded) {
-                    toast.error(`${responseData.details}`)
+                    toast.error(responseData.details)
                     fetchUserPlan()
                 } else {
-                    throw new Error(responseData.error || 'Failed to regenerate image')
+                    toast.error(responseData.error || 'Failed to regenerate image')
                 }
             }
         } catch (error) {
+            removeGeneration(tempId)
             toast.error('Failed to regenerate image')
             console.error('Regeneration error:', error)
         } finally {
@@ -256,20 +313,25 @@ export default function ImageGenerationResult() {
             return
         }
 
-        const dimensions = getRatioDimensions(selectedRatio)
+        const modelToUse = selectedModel || DEFAULT_IMAGE_MODEL_ID
+        const providerToUse = getProviderIdByModelId(modelToUse)
+        const dimensions = getRatioDimensions(modelToUse, selectedRatio)
         const width = dimensions.width
         const height = dimensions.height
-        const modelToUse = selectedModel || 'provider-4/flux-schnell'
         const aspectRatio = selectedRatio
-        const newLibId = uuidv4()
+        const targetConversationId = conversationId || uuidv4()
+        const tempId = `temp-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-        upsertGeneration(newLibId, {
+        upsertGeneration(tempId, {
+            libId: targetConversationId,
             prompt,
-            selectedModel: modelToUse,
+            model: modelToUse,
+            provider: providerToUse,
             width,
             height,
             aspectRatio,
-            status: 'generating'
+            status: 'generating',
+            isLocalPending: true,
         })
 
         setNewPrompt('')
@@ -283,11 +345,12 @@ export default function ImageGenerationResult() {
                 },
                 body: JSON.stringify({
                     prompt,
+                    provider: providerToUse,
                     model: modelToUse,
                     width,
                     height,
                     referenceImage: null,
-                    libId: newLibId,
+                    libId: targetConversationId,
                     userEmail: currentUser?.email
                 }),
             })
@@ -296,11 +359,17 @@ export default function ImageGenerationResult() {
 
             if (response.ok) {
                 fetchUserPlan()
-                fetchGenerationData(newLibId)
+                // Immediately update state from the API response so the image shows without waiting for DB polling
+                if (responseData.generation) {
+                    upsertGeneration(tempId, normalizeGeneration(responseData.generation))
+                } else {
+                    removeGeneration(tempId)
+                    fetchGenerationData(targetConversationId)
+                }
             } else {
                 const message = responseData?.details || responseData?.error || 'Failed to generate image'
                 toast.error(message)
-                upsertGeneration(newLibId, { status: 'failed', errorMessage: message })
+                removeGeneration(tempId)
                 if (responseData?.limitExceeded) {
                     fetchUserPlan()
                 }
@@ -308,7 +377,7 @@ export default function ImageGenerationResult() {
         } catch (error) {
             console.error('Error initiating image generation:', error)
             toast.error('Failed to initiate image generation. Please try again.')
-            upsertGeneration(newLibId, { status: 'failed', errorMessage: 'Failed to initiate image generation' })
+            removeGeneration(tempId)
         } finally {
             setIsSubmittingPrompt(false)
         }
@@ -346,7 +415,7 @@ export default function ImageGenerationResult() {
 
     return (
         <div className="min-h-screen bg-white dark:bg-[oklch(0.2478_0_0.24)] p-6 md:p-8 pb-36">
-            <div className="max-w-6xl mx-auto">
+            <div className="max-w-5xl mx-auto">
                 <div className="mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-6 border-b border-slate-200 dark:border-slate-800">
                     <div>
                         <h1 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-white">
@@ -361,76 +430,74 @@ export default function ImageGenerationResult() {
                     </div>
                 </div>
 
-                <div className="space-y-10">
-                    {generations.map(generation => (
-                        <div key={generation.libId} className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                <div className="space-y-8 md:space-y-10">
+                    {generations.map(generation => {
+                        const previewAspectClass = generation?.width && generation?.height
+                            ? `aspect-[${generation.width}/${generation.height}]`
+                            : 'aspect-square'
+
+                        return (
+                        <div key={generation.entryId} className="grid grid-cols-1 lg:grid-cols-4 gap-5 md:gap-6">
                             <div className="lg:col-span-3">
-                                <div className="border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden bg-slate-50 dark:bg-slate-900">
+                                <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 max-w-2xl mx-auto shadow-sm">
                                     {generation?.status === 'generating' ? (
-                                        <div className="aspect-square flex items-center justify-center">
+                                        <div className={`${previewAspectClass} flex items-center justify-center min-h-70`}>
                                             <div className="text-center">
                                                 <div className="animate-spin w-12 h-12 border-2 border-slate-300 dark:border-slate-700 border-t-slate-600 dark:border-t-slate-300 rounded-full mx-auto mb-4"></div>
                                                 <p className="text-slate-600 dark:text-slate-400 text-sm">Creating image...</p>
                                                 {generation?.prompt && (
-                                                    <p className="text-xs text-slate-500 dark:text-slate-500 mt-3 px-4">
+                                                    <p className="text-xs leading-relaxed wrap-break-word text-slate-500 dark:text-slate-500 mt-3 px-4">
                                                         "{generation.prompt.substring(0, 100)}{generation.prompt.length > 100 ? '...' : ''}"
                                                     </p>
                                                 )}
                                             </div>
                                         </div>
-                                    ) : generation?.status === 'completed' && generation?.generatedImageUrl ? (
+                                    ) : generation?.status === 'completed' && (generation?.resolvedImageUrl || generation?.publicUrl || generation?.displayUrl || generation?.generatedImagePath) ? (
                                         <img
-                                            src={generation.generatedImageUrl}
+                                            src={generation?.resolvedImageUrl || resolveGenerationImageUrl(generation)}
                                             alt="Generated"
-                                            className="w-full h-auto"
+                                            className="block w-full h-auto max-h-[65vh] object-contain"
                                         />
                                     ) : generation?.status === 'failed' ? (
-                                        <div className="aspect-square flex items-center justify-center">
+                                        <div className={`${previewAspectClass} flex items-center justify-center min-h-70`}>
                                             <div className="text-center">
                                                 <XCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
                                                 <p className="text-slate-900 dark:text-white font-medium">Generation Failed</p>
                                                 <p className="text-sm text-slate-600 dark:text-slate-400 mt-2">
-                                                    {generation.errorMessage || 'Unknown error'}
+                                                    {generation?.failMessage || 'Check prompts or try again.'}
                                                 </p>
                                             </div>
                                         </div>
                                     ) : (
-                                        <div className="aspect-square flex items-center justify-center">
+                                        <div className={`${previewAspectClass} flex items-center justify-center min-h-70`}>
                                             <p className="text-slate-600 dark:text-slate-400">Loading...</p>
                                         </div>
                                     )}
                                 </div>
                             </div>
 
-                            <div className="space-y-6">
+                            <div className="space-y-5 lg:sticky lg:top-24 h-fit">
                                 <div className="border border-slate-200 dark:border-slate-800 rounded-lg p-4">
                                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white mb-4">Details</h3>
                                     <div className="space-y-4 text-sm">
                                         <div>
                                             <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Prompt</p>
-                                            <p className="text-slate-900 dark:text-white">{generation?.prompt || '-'}</p>
+                                            <p className="text-slate-900 dark:text-white wrap-break-word leading-relaxed">{generation?.prompt || '-'}</p>
                                         </div>
                                         <div>
                                             <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Model</p>
                                             <p className="text-slate-900 dark:text-white">
-                                                {generation?.selectedModel === 'chatboxai' ? 'ChatBoxAI v1.0' : 
-                                                 generation?.selectedModel?.includes('imagen') ? 'Google Imagen' : 
-                                                 generation?.selectedModel?.includes('flux') ? 'Flux Schnell' :
-                                                 generation?.selectedModel?.includes('dall-e') ? 'DALL-E 2' :
-                                                 generation?.selectedModel?.includes('qwen') ? 'Qwen Image' :
-                                                 generation?.selectedModel || '-'}
-                                            </p>
-                                        </div>
-                                        <div>
-                                            <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Ratio</p>
-                                            <p className="text-slate-900 dark:text-white">
-                                                {generation?.aspectRatio || '-'}
+                                                {generation?.model
+                                                ? (getModelById(generation.model)?.name || generation.model)
+                                                : '-'}
                                             </p>
                                         </div>
                                         <div>
                                             <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Size</p>
                                             <p className="text-slate-900 dark:text-white">
-                                                {generation?.width}×{generation?.height}
+                                                {generation?.width && generation?.height
+                                                    ? `${generation.width}×${generation.height}`
+                                                    : '-'}
                                             </p>
                                         </div>
                                     </div>
@@ -487,10 +554,10 @@ export default function ImageGenerationResult() {
                                             variant="outline"
                                             size="sm"
                                             onClick={() => handleRegenerate(generation)}
-                                            disabled={regeneratingId === generation.libId || (!planLoading && userPlan && !userPlan?.limits?.canGenerate)}
+                                            disabled={regeneratingId === generation.entryId || (!planLoading && userPlan && !userPlan?.limits?.canGenerate)}
                                             className="w-full cursor-pointer justify-start"
                                         >
-                                            <RefreshCw className={`w-4 h-4 mr-2 ${regeneratingId === generation.libId ? 'animate-spin' : ''}`} />
+                                            <RefreshCw className={`w-4 h-4 mr-2 ${regeneratingId === generation.entryId ? 'animate-spin' : ''}`} />
                                             Regenerate
                                         </Button>
                                         <Button
@@ -509,97 +576,122 @@ export default function ImageGenerationResult() {
                                         variant="outline"
                                         size="sm"
                                         onClick={() => handleRegenerate(generation)}
-                                        disabled={regeneratingId === generation.libId}
+                                        disabled={regeneratingId === generation.entryId}
                                         className="w-full cursor-pointer"
                                     >
-                                        <RefreshCw className={`w-4 h-4 mr-2 ${regeneratingId === generation.libId ? 'animate-spin' : ''}`} />
+                                        <RefreshCw className={`w-4 h-4 mr-2 ${regeneratingId === generation.entryId ? 'animate-spin' : ''}`} />
                                         Try Again
                                     </Button>
                                 )}
                             </div>
                         </div>
-                    ))}
+                    )})}
                 </div>
             </div>
 
             <div className="fixed bottom-6 left-0 right-0 flex justify-center px-4 z-20">
                 <div className="w-full max-w-3xl">
-                    <div className="border border-slate-200 dark:border-slate-800 bg-white dark:bg-[oklch(0.3092_0_0)] rounded-2xl shadow-lg p-3">
-                        {/* Aspect Ratio Selection */}
-                        <div className="mb-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-                            <div className="flex items-center gap-2 overflow-x-auto pb-2">
-                                {ASPECT_RATIOS.map((ratio) => (
-                                    <button
-                                        key={ratio.value}
-                                        onClick={() => setSelectedRatio(ratio.value)}
-                                        className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
-                                            selectedRatio === ratio.value
-                                                ? 'dark:bg-[oklch(0.3092_0_0)] text-white'
-                                                : 'bg-slate-100 dark:bg-[oklch(0.209_0_0)] text-slate-700 dark:text-slate-300 hover:bg-slate-200 cursor-pointer'
-                                        }`}
-                                    >
-                                        {ratio.label}
-                                    </button>
-                                ))}
-                            </div>
+                    <div className="border border-slate-200/90 dark:border-slate-800 bg-white/95 dark:bg-[oklch(0.3092_0_0)] backdrop-blur rounded-2xl shadow-lg">
+
+                        {/* Aspect Ratio Selection — styled as badge area */}
+                        <div className="flex flex-wrap items-center gap-1 px-4 pt-3">
+                            {currentModelConfig.ratios.map((ratio) => (
+                                <button
+                                    key={ratio.value}
+                                    onClick={() => setSelectedRatio(ratio.value)}
+                                    className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors whitespace-nowrap ${
+                                        selectedRatio === ratio.value
+                                            ? 'dark:bg-[oklch(0.2478_0_0)] text-white'
+                                            : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 cursor-pointer'
+                                    }`}
+                                >
+                                    {ratio.label}
+                                </button>
+                            ))}
                         </div>
-                        <div className="flex items-end gap-3">
-                            <textarea
-                                value={newPrompt}
-                                onChange={(e) => setNewPrompt(e.target.value)}
-                                onKeyDown={handlePromptKeyDown}
-                                placeholder="Describe the image you want to generate..."
-                                className="w-full p-2 outline-none resize-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden bg-transparent text-slate-900 dark:text-white placeholder:text-slate-500 dark:placeholder:text-gray-300"
-                                rows={1}
-                            />
-                            <DropdownMenu>
-                                <DropdownMenuTrigger className='inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 w-10 p-0 shrink-0 cursor-pointer relative'>
-                                    <Cpu className='text-gray-500 dark:text-gray-400 w-4 h-4' />
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-y-auto">
-                                    <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-white dark:bg-[oklch(0.2478_0_0)] z-10">
-                                        Image Models
-                                    </DropdownMenuLabel>
-                                    <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-white dark:bg-[oklch(0.2478_0_0)] z-10" />
-                                    <div className="space-y-1">
-                                        {IMAGE_MODELS.map((model) => (
-                                            <DropdownMenuItem 
-                                                key={model.id}
-                                                className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] cursor-pointer ${
-                                                    selectedModel === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''
-                                                }`}
-                                                onClick={() => setSelectedModel(model.id)}
-                                            >
-                                                <div className='w-full'>
-                                                    <div className='flex items-center justify-between'>
-                                                        <div className='flex items-center gap-2'>
-                                                            <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
+
+                        {/* Textarea */}
+                        <textarea
+                            value={newPrompt}
+                            onChange={(e) => setNewPrompt(e.target.value)}
+                            onKeyDown={handlePromptKeyDown}
+                            placeholder="Describe the image you want to generate..."
+                            className="w-full resize-none bg-transparent px-4 pt-4 pb-2 outline-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden text-slate-900 dark:text-white placeholder:text-slate-500 dark:placeholder:text-gray-300"
+                            rows={1}
+                            style={{ overflow: 'hidden' }}
+                            onInput={(e) => {
+                                e.target.style.height = 'auto';
+                                const newHeight = e.target.scrollHeight;
+                                const maxHeight = 12 * 24;
+                                if (newHeight > maxHeight) {
+                                    e.target.style.height = maxHeight + 'px';
+                                    e.target.style.overflowY = 'scroll';
+                                } else {
+                                    e.target.style.height = newHeight + 'px';
+                                    e.target.style.overflowY = 'hidden';
+                                }
+                            }}
+                        />
+
+                        {/* ── Bottom toolbar ── */}
+                        <div className="flex items-center justify-between px-3 pb-3">
+                            <div className="flex items-center gap-1">
+                                {/* Model selector */}
+                                <DropdownMenu>
+                                    <DropdownMenuTrigger className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-gray-500/60 transition-colors cursor-pointer border-0 bg-transparent outline-none">
+                                        <Cpu className='text-gray-500 dark:text-gray-400 w-4 h-4' />
+                                        <span className="hidden sm:inline">{IMAGE_MODELS.find(m => m.id === selectedModel)?.name || 'Model'}</span>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-y-auto">
+                                        <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-white dark:bg-[oklch(0.2478_0_0)] z-10">
+                                            Image Models
+                                        </DropdownMenuLabel>
+                                        <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-white dark:bg-[oklch(0.2478_0_0)] z-10" />
+                                        <div className="space-y-1">
+                                            {IMAGE_MODELS.map((model) => (
+                                                <DropdownMenuItem 
+                                                    key={model.id}
+                                                    className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] cursor-pointer ${
+                                                        selectedModel === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''
+                                                    }`}
+                                                    onClick={() => setSelectedModel(model.id)}
+                                                >
+                                                    <div className='w-full'>
+                                                        <div className='flex items-center justify-between'>
+                                                            <div className='flex items-center gap-2'>
+                                                                <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
+                                                            </div>
+                                                            {selectedModel === model.id && (
+                                                                <div className='w-2 h-2 bg-green-500 rounded-full'></div>
+                                                            )}
                                                         </div>
-                                                        {selectedModel === model.id && (
-                                                            <div className='w-2 h-2 bg-green-500 rounded-full'></div>
-                                                        )}
+                                                        <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                                                            {model.desc}
+                                                        </p>
                                                     </div>
-                                                    <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                                                        {model.desc}
-                                                    </p>
-                                                </div>
-                                            </DropdownMenuItem>
-                                        ))}
-                                    </div>
-                                </DropdownMenuContent>
-                            </DropdownMenu>
-                            <Button
-                                size="sm"
-                                className="flex items-center cursor-pointer h-10 w-10 p-0 shrink-0"
+                                                </DropdownMenuItem>
+                                            ))}
+                                        </div>
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                            </div>
+
+                            {/* Send button */}
+                            <button
                                 onClick={handleNewGeneration}
                                 disabled={isSubmittingPrompt || !newPrompt.trim()}
+                                className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200 ${
+                                    newPrompt.trim()
+                                        ? 'bg-foreground text-background hover:opacity-80'
+                                        : 'dark:bg-[oklch(0.2478_0_0)] text-muted-foreground cursor-not-allowed'
+                                }`}
                             >
                                 {isSubmittingPrompt ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <div className="h-4 w-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
                                 ) : (
-                                    <Send className="w-4 h-4" />
+                                    <ArrowUp className="h-4 w-4" />
                                 )}
-                            </Button>
+                            </button>
                         </div>
                     </div>
                 </div>

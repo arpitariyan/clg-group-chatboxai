@@ -1,0 +1,5 @@
+created_at,user_email,amount,transaction_type,order_id,package_id
+2026-01-18 04:05:34.762261+00,arpitariyanm@gmail.com,1,deduct,,
+2026-02-12 02:53:13.965931+00,arpitariyanm@gmail.com,100,weekly_reset,,
+2026-01-18 03:57:51.096331+00,arpitariyanm@gmail.com,100,purchase,,
+2026-02-16 09:55:18.278425+00,arpitariyanm@gmail.com,1,deduct,,

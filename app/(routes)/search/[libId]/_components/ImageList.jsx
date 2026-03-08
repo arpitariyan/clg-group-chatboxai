@@ -128,7 +128,7 @@ function ImageList({ searchResult }) {
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Image Section */}
-                        <div className="flex-1 flex items-center justify-center bg-gray-100 p-2 md:p-4 min-h-[250px] md:min-h-[400px]">
+                        <div className="flex-1 flex items-center justify-center bg-gray-100 p-2 md:p-4 min-h-62.5 md:min-h-100">
                             <img
                                 src={selectedImage.url}
                                 alt={selectedImage.title}

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getAuth } from '@clerk/nextjs/server'
-import { supabaseAdmin as supabase } from '@/services/supabase-admin'
+import { storage, databases, DB_ID, BUCKET_ID, getFileUrl, ID, createAppwriteFile } from '@/services/appwrite-admin'
+import { WEBSITE_IMAGES_COLLECTION_ID } from '@/services/appwrite-collections'
 
 export async function POST(request) {
     try {
@@ -34,7 +35,7 @@ export async function POST(request) {
         }
 
         // Validate file size (max 10MB)
-        const maxSize = 10 * 1024 * 1024 // 10MB
+        const maxSize = 10 * 1024 * 1024
         if (file.size > maxSize) {
             return NextResponse.json(
                 { error: 'File size exceeds 10MB limit' },
@@ -42,70 +43,41 @@ export async function POST(request) {
             )
         }
 
-        // Convert file to buffer
         const bytes = await file.arrayBuffer()
         const buffer = Buffer.from(bytes)
 
-        // Generate unique filename
         const timestamp = Date.now()
         const randomStr = Math.random().toString(36).substring(7)
         const fileExtension = file.name.split('.').pop()
         const fileName = `${timestamp}_${randomStr}.${fileExtension}`
-        
-        // Organize by project if projectId provided
-        const filePath = projectId 
-            ? `website-builder-images/${projectId}/${fileName}`
-            : `website-builder-images/${userId}/${fileName}`
 
-        // Upload to Supabase Storage
-        const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('mainStorage')
-            .upload(filePath, buffer, {
-                contentType: file.type,
-                cacheControl: '3600',
-                upsert: false
-            })
-
-        if (uploadError) {
-            console.error('Upload error:', uploadError)
-            return NextResponse.json(
-                { error: 'Failed to upload image' },
-                { status: 500 }
-            )
-        }
-
-        // Get public URL
-        const { data: { publicUrl } } = supabase.storage
-            .from('mainStorage')
-            .getPublicUrl(filePath)
+        // Upload to Appwrite Storage
+        const inputFile = createAppwriteFile(buffer, fileName, file.type || 'application/octet-stream')
+        const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), inputFile)
+        const publicUrl = getFileUrl(uploaded.$id)
 
         // Store image record in database if projectId provided
         if (projectId) {
-            const { error: dbError } = await supabase
-                .from('website_images')
-                .insert({
+            try {
+                await databases.createDocument(DB_ID, WEBSITE_IMAGES_COLLECTION_ID, ID.unique(), {
                     project_id: projectId,
                     image_url: publicUrl,
-                    file_path: filePath,
+                    file_id: uploaded.$id,
                     type: 'uploaded',
-                    metadata: {
-                        originalName: file.name,
-                        size: file.size,
-                        contentType: file.type
-                    }
+                    original_name: file.name,
+                    size: file.size,
+                    content_type: file.type
                 })
-
-            if (dbError) {
+            } catch (dbError) {
                 console.error('Database error:', dbError)
                 // Don't fail the request if database insert fails
-                // The image is already uploaded successfully
             }
         }
 
         return NextResponse.json({
             success: true,
             url: publicUrl,
-            filePath: filePath,
+            fileId: uploaded.$id,
             fileName: fileName
         })
 

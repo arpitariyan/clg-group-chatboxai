@@ -1,5 +1,9 @@
-import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+﻿import { NextResponse } from 'next/server';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import {
+  LIBRARY_COLLECTION_ID,
+  USERS_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function GET(request) {
   try {
@@ -11,25 +15,36 @@ export async function GET(request) {
 
     const offset = (page - 1) * limit;
 
-    // Get all libraries with uploaded files
-    let query = supabase
-      .from('Library')
-      .select('libId, userEmail, uploadedFiles, createdAt, Users!inner(name, email)')
-      .not('uploadedFiles', 'is', null)
-      .order('createdAt', { ascending: false });
+    // Fetch Library docs that have uploadedFiles
+    const libFilters = [
+      Query.isNotNull('uploadedFiles'),
+      Query.orderDesc('$createdAt'),
+      Query.limit(500),
+    ];
+    const libRes = await databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, libFilters);
 
-    if (search) {
-      query = query.or(`userEmail.ilike.%${search}%`);
+    // 2-step JOIN: get user names by email
+    const emails = [...new Set(libRes.documents.map(d => d.userEmail).filter(Boolean))];
+    let userMap = {};
+    if (emails.length > 0) {
+      const usersRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.equal('email', emails),
+        Query.limit(emails.length + 10),
+      ]);
+      usersRes.documents.forEach(u => { userMap[u.email] = u.name; });
     }
 
-    const { data: libraries, error } = await query;
-
-    if (error) throw error;
-
-    // Extract individual files from the uploadedFiles JSON
+    // Extract individual files from uploadedFiles JSON
     let allFiles = [];
-    libraries?.forEach(lib => {
-      const files = lib.uploadedFiles;
+    libRes.documents.forEach(lib => {
+      let files = lib.uploadedFiles;
+      if (typeof files === 'string') {
+        try {
+          files = JSON.parse(files);
+        } catch {
+          files = [];
+        }
+      }
       if (Array.isArray(files)) {
         files.forEach((file, index) => {
           allFiles.push({
@@ -41,8 +56,8 @@ export async function GET(request) {
             path: file.path || file.filePath || '',
             url: file.publicUrl || file.url || '',
             user_email: lib.userEmail,
-            user_name: lib.Users?.name || 'Unknown',
-            created_at: lib.createdAt,
+            user_name: userMap[lib.userEmail] || 'Unknown',
+            created_at: lib.$createdAt,
           });
         });
       }
@@ -53,11 +68,12 @@ export async function GET(request) {
       allFiles = allFiles.filter(file => file.type?.includes(type));
     }
 
-    // Apply search filter on filename
+    // Apply search filter
     if (search) {
-      allFiles = allFiles.filter(file => 
-        file.name?.toLowerCase().includes(search.toLowerCase()) ||
-        file.user_email?.toLowerCase().includes(search.toLowerCase())
+      const term = search.toLowerCase();
+      allFiles = allFiles.filter(file =>
+        file.name?.toLowerCase().includes(term) ||
+        file.user_email?.toLowerCase().includes(term)
       );
     }
 

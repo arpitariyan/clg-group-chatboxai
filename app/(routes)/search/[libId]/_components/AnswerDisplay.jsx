@@ -1,20 +1,29 @@
 'use client'
 
 import Image from 'next/image'
-import React, { useState, useEffect } from 'react'
-import { ExternalLink, Globe, Calendar, ChevronDown, ChevronUp, FolderClosed, Loader2Icon } from 'lucide-react'
+import React, { useState, useEffect, useRef } from 'react'
+import { ExternalLink, Globe, Calendar, ChevronDown, ChevronUp, FolderClosed } from 'lucide-react'
 import DisplaySummery from './DisplaySummery';
 
 function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer = false }) {
     // Add state to force re-renders when searchResult changes
     const [currentSearchResult, setCurrentSearchResult] = useState(searchResult);
 
-    // Update local state when prop changes
+    // Track previous aiResp to avoid unnecessary re-renders
+    const prevAiRespRef = useRef(searchResult?.aiResp)
+
     useEffect(() => {
-        if (searchResult) {
-            setCurrentSearchResult(searchResult);
+        if (!searchResult) return
+
+        // Only update state if something actually changed
+        const aiRespChanged = searchResult.aiResp !== prevAiRespRef.current
+        const isNewResult = searchResult.id !== currentSearchResult?.id
+
+        if (aiRespChanged || isNewResult) {
+            prevAiRespRef.current = searchResult.aiResp
+            setCurrentSearchResult(searchResult)
         }
-    }, [searchResult, searchResult?.aiResp]); // Also depend on aiResp specifically
+    }, [searchResult, searchResult?.aiResp, searchResult?.id]) // Also depend on aiResp specifically
 
     // Get the mixed results or categorized web results
     const webResults = currentSearchResult?.searchResult || currentSearchResult?.categorizedResults?.web || currentSearchResult?.mixedResults?.filter(item => item.resultType === 'web') || []
@@ -287,23 +296,35 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
 
                 {/* AI Response Section - Now properly contained and scrollable */}
                 {isLoadingAnswer ? (
-                    <div className="mt-6 min-w-0 w-full overflow-hidden">
-                        <div className="flex items-center space-x-3 p-4 bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-600 rounded-lg">
-                            <Loader2Icon className="w-4 h-4 text-gray-500 dark:text-gray-300 animate-spin" />
-                            <div className="text-sm text-gray-600 dark:text-gray-300">
-                                AI is thinking and preparing your answer...
-                            </div>
+                    <div className="w-full min-w-0 py-1 space-y-3">
+                        {/* Blinking cursor line — exactly like ChatGPT/Claude */}
+                        {/* <div className="flex items-center gap-1">
+                            <span
+                                className="inline-block w-[3px] h-[1.1em] rounded-full
+                                           bg-gray-400 dark:bg-zinc-400
+                                           animate-[blink_1s_step-start_infinite]"
+                                style={{ verticalAlign: 'text-bottom' }}
+                            />
+                        </div> */}
+
+                        {/* Shimmer skeleton lines */}
+                        <div className="space-y-2.5">
+                            <div className="h-[14px] w-[85%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse" />
+                            <div className="h-[14px] w-[70%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:150ms]" />
+                            <div className="h-[14px] w-[45%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:300ms]" />
                         </div>
                     </div>
                 ) : currentSearchResult?.aiResp ? (
-                    <div className="mt-6 min-w-0 w-full overflow-hidden">
+                    <div className="min-w-0 w-full overflow-hidden">
                         <DisplaySummery
-                            key={`summary-${currentSearchResult?.id}-${currentSearchResult?.aiResp?.length || 0}`} // Force re-render with key
+                            key={`summary-${currentSearchResult?.id}`}
                             aiResp={currentSearchResult?.aiResp}
                             usedModel={currentSearchResult?.usedModel}
                             modelApi={currentSearchResult?.modelApi}
                             isFileAnalysis={isFileAnalysis}
                             analyzedFilesCount={analyzedFilesCount}
+                            isLatestMessage={isLatestMessage}
+                            resultId={currentSearchResult?.id}
                         />
                     </div>
                 ) : null}

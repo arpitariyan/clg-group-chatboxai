@@ -18,7 +18,7 @@ import {
   Square
 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
-import { toast } from 'react-toastify';
+import { toast } from '@/lib/alert';
 import moment from 'moment';
 import {
   DropdownMenu,

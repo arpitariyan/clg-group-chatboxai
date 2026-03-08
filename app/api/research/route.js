@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
-import { checkResearchLimit } from '@/lib/planUtils';
+import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { checkResearchLimit } from '@/lib/planUtils-server';
 
 /**
  * Deep Research API - Comprehensive Research Engine
@@ -16,23 +17,20 @@ import { checkResearchLimit } from '@/lib/planUtils';
 
 // Generate diverse research queries from the main prompt
 function generateResearchQueries(mainPrompt) {
-    return [
-        mainPrompt, // Original query
+    const querySet = new Set([
+        mainPrompt,
         `comprehensive overview of ${mainPrompt}`,
         `latest developments and updates on ${mainPrompt}`,
         `expert analysis of ${mainPrompt}`,
-        `detailed explanation of ${mainPrompt}`,
-        `pros and cons of ${mainPrompt}`,
-        `statistics and data about ${mainPrompt}`,
-        `common misconceptions about ${mainPrompt}`,
-        `future trends in ${mainPrompt}`,
-        `best practices for ${mainPrompt}`,
-        `why ${mainPrompt} matters`,
-        `impact and implications of ${mainPrompt}`,
-        `historical context of ${mainPrompt}`,
-        `case studies on ${mainPrompt}`,
-        `challenges and solutions for ${mainPrompt}`
-    ];
+        `statistics, data, and benchmarks for ${mainPrompt}`,
+        `case studies and real-world examples of ${mainPrompt}`,
+        `best practices and implementation patterns for ${mainPrompt}`,
+        `challenges, risks, and mitigation for ${mainPrompt}`,
+        `future trends and outlook for ${mainPrompt}`,
+        `historical context and evolution of ${mainPrompt}`
+    ]);
+
+    return Array.from(querySet);
 }
 
 // Deduplicate sources by URL
@@ -74,7 +72,12 @@ function formatSources(sources) {
 // Fetch and extract page content (best effort, lightweight)
 async function fetchPageContent(url) {
     try {
-        const resp = await axios.get(url, { timeout: 12000 });
+        const resp = await axios.get(url, {
+            timeout: 12000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (compatible; ChatBoxAI-Research/1.0)'
+            }
+        });
         const html = resp.data || '';
         // Strip scripts/styles and tags
         const text = html
@@ -91,6 +94,33 @@ async function fetchPageContent(url) {
     }
 }
 
+function normalizeSelectedModel(selectedModel) {
+    if (!selectedModel) return { modelApi: 'auto', name: 'Auto', provider: 'mixed' };
+    if (typeof selectedModel === 'string') {
+        return { modelApi: selectedModel, name: selectedModel, provider: 'mixed' };
+    }
+    return {
+        modelApi: selectedModel.modelApi || 'auto',
+        name: selectedModel.name || 'Auto',
+        provider: selectedModel.provider || 'mixed',
+        id: selectedModel.id
+    };
+}
+
+function createNoSourceResearchPrompt(originalQuery) {
+    return `You are a senior research analyst. Produce a high-quality, detailed research brief for the topic below using your internal knowledge.
+
+TOPIC: "${originalQuery}"
+
+Requirements:
+- Use clear markdown headings and subheadings.
+- Include: Executive Summary, Core Concepts, Key Findings, Contrasting Viewpoints, Practical Implications, Risks & Limitations, and Actionable Recommendations.
+- Include concrete examples, estimates, and decision criteria where useful.
+- Clearly mark uncertainty where evidence may be limited.
+- Provide a comprehensive and structured response (minimum 1200 words).
+`;
+}
+
 // Generate a heuristic summary (no model call to avoid latency for each source)
 function heuristicSummary(text) {
     if (!text) return { summary: '', keyPoints: [] };
@@ -103,7 +133,7 @@ function heuristicSummary(text) {
 // Create a comprehensive research prompt for AI synthesis
 function createResearchSynthesisPrompt(originalQuery, sources) {
     const sourcesText = sources.map((s, idx) =>
-        `[${idx + 1}] ${s.title}\n   URL: ${s.url}\n   Summary: ${s.description}${s.keyPoints ? '\n   Key Points: ' + s.keyPoints.join('; ') : ''}`
+        `[${idx + 1}] ${s.title}\n   URL: ${s.url}\n   Summary: ${s.summary || s.description}${s.keyPoints ? '\n   Key Points: ' + s.keyPoints.join('; ') : ''}${s.contentExcerpt ? '\n   Excerpt: ' + s.contentExcerpt : ''}`
     ).join('\n\n');
 
     return `You are an expert research analyst with deep knowledge across multiple domains. Your task is to synthesize comprehensive, high-quality research based on the provided sources.
@@ -183,7 +213,12 @@ COMPREHENSIVE RESEARCH REQUIREMENTS:
    - Use bold for key terms and important concepts
    - Use bullet points and numbered lists for clarity and readability
    - Maintain academic rigor while remaining accessible
-   - Length: Aim for a comprehensive 2000-3000 word response
+    - Length: Aim for a comprehensive 1800-2800 word response
+
+10. EVIDENCE RIGOR
+    - Every major section must include source citations like [1], [2]
+    - Avoid unsupported claims; if evidence is weak, explicitly state uncertainty
+    - Distinguish facts, interpretations, and projections
 
 CRITICAL INSTRUCTIONS:
 - Make the research DETAILED and COMPREHENSIVE, not brief
@@ -205,6 +240,8 @@ export async function POST(request) {
             includeDiversity = true,
             user_email
         } = body;
+
+        const normalizedSelectedModel = normalizeSelectedModel(selectedModel);
 
         if (!searchInput?.trim()) {
             return NextResponse.json(
@@ -240,16 +277,31 @@ export async function POST(request) {
 
         // Log usage for this Research attempt
         try {
-            await supabase
-                .from('usage_logs')
-                .insert({
-                    user_email,
-                    model: 'research',
-                    operation_type: 'research',
-                    credits_consumed: 0,
-                    credits_remaining: null,
-                    created_at: new Date().toISOString()
-                });
+            const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+                Query.equal('email', user_email),
+                Query.limit(1),
+            ]);
+            const userDoc = userRes.documents?.[0];
+
+            if (userDoc?.$id) {
+                try {
+                    await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
+                        user_id: userDoc.$id,
+                        model: 'research',
+                        operation_type: 'research',
+                        credits_consumed: 0,
+                        credits_remaining: 0,
+                    });
+                } catch (logByIdErr) {
+                    await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
+                        user_email,
+                        model: 'research',
+                        operation_type: 'research',
+                        credits_consumed: 0,
+                        credits_remaining: 0,
+                    });
+                }
+            }
         } catch (logErr) {
             console.warn('Failed to log research usage:', logErr?.message || logErr);
         }
@@ -267,7 +319,8 @@ export async function POST(request) {
         const baseUrl = `${protocol}://${host}`;
 
         // Step 2: Execute searches in parallel
-        const searchPromises = researchQueries.slice(0, 5).map(async (query) => {
+        const queryBatchSize = 7;
+        const searchPromises = researchQueries.slice(0, queryBatchSize).map(async (query) => {
             try {
                 const response = await axios.post(
                     `${baseUrl}/api/google-search-api`,
@@ -299,7 +352,8 @@ export async function POST(request) {
 
         // Step 3: Deduplicate and format sources
         const uniqueSources = deduplicateSources(allSources);
-        const formattedSources = formatSources(uniqueSources).slice(0, maxSources);
+        const normalizedMaxSources = Math.max(8, Math.min(Number(maxSources) || 20, 30));
+        const formattedSources = formatSources(uniqueSources).slice(0, normalizedMaxSources);
 
         // console.log(`🎯 Unique sources after deduplication: ${formattedSources.length}`);
 
@@ -309,11 +363,35 @@ export async function POST(request) {
         // If no sources found, return with fallback flag
         if (!googleApiUsed) {
             console.warn('⚠️ No sources found for research, using direct AI model');
+
+            let runId = null;
+            try {
+                const fallbackPrompt = createNoSourceResearchPrompt(searchInput);
+                const llmResponse = await axios.post(
+                    `${baseUrl}/api/llm-model`,
+                    {
+                        searchInput: fallbackPrompt,
+                        searchResult: [],
+                        recordId: 'research-' + Date.now(),
+                        selectedModel: normalizedSelectedModel,
+                        isPro: true,
+                        useDirectModel: true
+                    },
+                    {
+                        headers: { 'Content-Type': 'application/json' },
+                        timeout: 30000
+                    }
+                );
+                runId = llmResponse.data;
+            } catch (fallbackErr) {
+                console.warn('⚠️ Could not start no-source research synthesis:', fallbackErr?.message || fallbackErr);
+            }
+
             return NextResponse.json({
                 success: true,
                 googleApiUsed: false,
                 useDirectModel: true,
-                runId: null,
+                runId,
                 sources: [],
                 searchResult: [],
                 metadata: {
@@ -331,15 +409,17 @@ export async function POST(request) {
 
         // Step 5: Enrich sources with page content & heuristic summaries (limit to first 8 to control cost)
         // console.log('📄 Fetching page contents for deep enrichment...');
-        const enrichmentTargets = formattedSources.slice(0, 8);
-        for (const src of enrichmentTargets) {
-            const content = await fetchPageContent(src.url);
-            const { summary, keyPoints } = heuristicSummary(content);
-            src.contentExcerpt = content.slice(0, 600);
-            src.summary = summary;
-            src.keyPoints = keyPoints;
-            src.contentLength = content.length;
-        }
+        const enrichmentTargets = formattedSources.slice(0, 12);
+        await Promise.allSettled(
+            enrichmentTargets.map(async (src) => {
+                const content = await fetchPageContent(src.url);
+                const { summary, keyPoints } = heuristicSummary(content);
+                src.contentExcerpt = content.slice(0, 800);
+                src.summary = summary;
+                src.keyPoints = keyPoints;
+                src.contentLength = content.length;
+            })
+        );
 
         // Step 6: Initiate synthesis (best effort) using enriched sources
         // console.log('🤖 Initiating AI synthesis...');
@@ -357,7 +437,7 @@ export async function POST(request) {
                         keyPoints: s.keyPoints
                     })),
                     recordId: 'research-' + Date.now(), // Generate a temporary ID for research
-                    selectedModel: selectedModel,
+                    selectedModel: normalizedSelectedModel,
                     isPro: true // This will be handled on the frontend with actual user plan
                 },
                 {
@@ -381,7 +461,7 @@ export async function POST(request) {
             metadata: {
                 totalSourcesFound: allSources.length,
                 uniqueSources: formattedSources.length,
-                queriesExecuted: researchQueries.slice(0, 5).length,
+                queriesExecuted: researchQueries.slice(0, queryBatchSize).length,
                 researchDepth: 'comprehensive',
                 enrichedSources: enrichmentTargets.length
             }

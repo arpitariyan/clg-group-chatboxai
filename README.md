@@ -1,311 +1,199 @@
-# ChatBox AI - The Ultimate Full-Stack AI Platform
+# ChatboxAI - Advanced AI Conversational & Tooling Platform
 
-![ChatBox AI](public/favicon.ico) <!-- Placeholder for actual banner/logo -->
+ChatboxAI is a monolithic, feature-rich artificial intelligence platform built on Next.js. It goes far beyond a standard chat interface by incorporating multi-model AI routing, deep file parsing capability, AI-powered image generation, background removal, and a dedicated AI website builder.
 
-**ChatBox AI** is an advanced, enterprise-grade, feature-rich platform built with **Next.js (App Router)**. It serves as a unified ecosystem that connects users with world-class Large Language Models (LLMs), AI image generators, an autonomous AI-powered website builder, Voice AI interactions, and comprehensive multi-modal data analysis tools.
-
-Designed with resilience and scale in mind, ChatBox AI incorporates automated credit economies, robust API key failover mechanisms, distributed background jobs, and a sleek, highly animated user interface.
+This README serves as the ultimate source of truth for the project's architecture, data models, APIs, and complex workflows.
 
 ---
 
-## 🌟 Executive Summary of Capabilities
+## 🚀 1. Core Architecture & Tech Stack
 
-1. **Omni-Model AI Hub:** Access over 20+ cutting-edge models interchangeably (GPT-4o, Gemini 2.5/3 Pro, DeepSeek V3, Llama 3.2/4, Qwen3) without needing separate subscriptions.
-2. **Multi-Modal Document & Image Analysis:** Upload PDFs, Word documents (`mammoth`), Excel files (`xlsx`), and images for native, AI-driven context extraction.
-3. **Autonomous Website Builder:** Generate complete, responsive web applications via text prompts. Modify, rollback, and deploy them automatically.
-4. **Rich Media Processing:** Native image generation, in-browser background removal (`@imgly/background-removal`), image cropping (`react-easy-crop`), and dynamic image optimization (`sharp`).
-5. **Interactive UI/UX:** Powered by `framer-motion`, `three.js`, `simplex-noise`, and `typewriter-effect` for a highly engaging, modern feel.
-6. **Automated Economy:** Built-in subscriptions and token economies driven by Razorpay and Inngest chron jobs.
+The application is built around a serverless architecture using Next.js App Router, heavily utilizing background queues and a discrete BaaS (Backend as a Service) for storage and database.
 
----
+### Frontend
 
-## 🚀 Deep Dive: Core Features & Workflows
+- **Framework**: Next.js (App Router, React 18)
+- **Styling**: Tailwind CSS (v4) with `tw-animate-css` and deep CSS variable theming for native dark mode.
+- **UI Components**: Radix UI primitives (`@radix-ui/*`) wrapped in standard Shadcn-like configurations.
+- **Animations**: `framer-motion` and custom CSS keyframes.
+- **Icons**: `lucide-react` and `react-icons`.
+- **Markdown & Code**: `react-markdown`, `remark-gfm`, `react-syntax-highlighter` for rendering complex AI responses elegantly.
+- **3D & Visuals**: Includes `three` (Three.js) for advanced canvas rendering capabilities.
 
-### 🤖 1. Advanced Multi-Model AI Chat Interface
+### Backend & Middlewares
 
-Provide users with the best model for their specific task. The platform intelligently routes queries and maintains conversational history.
+- **Runtime**: Node.js via Next.js Serverless API routes (`/app/api/*`).
+- **Background Jobs**: **Inngest** (`inngest`) handles long-running processes (e.g., executing heavy AI website logic, scraping, or batch document processing) that would otherwise hit Vercel's 10-50s timeout limits.
+- **Authentication**: **Firebase Auth** (`firebase`) handles user identity combined with a custom Next.js `AuthContext` to manage local session states.
+- **File Parsing & Analysis**:
+  - `pdf-parse`: For extracting text from PDFs.
+  - `mammoth`: For extracting text from `.docx` files.
+  - `xlsx`: For reading spreadsheet data.
+  - `music-metadata`: For audio file introspection.
+- **Image Processing**:
+  - `@imgly/background-removal`: WebAssembly-powered native background removal logic.
+  - `sharp`: Fast local server image resizing and optimization.
+- **Payment Gateway**: **Razorpay** (`razorpay`) SDK for fetching plans, validating signatures, and webhook event processing.
 
-- **Tiered Access Control:** Models are strictly categorized into Free and Pro tiers.
-- **Supported AI Providers:**
-  - **Google:** Gemini 3 Flash, Gemini 3 Pro, Gemini 2.5 Flash, Gemini 2.5 Pro (and Thinking variants), Gemini 2.0 Flash.
-  - **OpenAI:** GPT-4o Mini, GPT-5 (Compact via API routing).
-  - **DeepSeek:** DeepSeek V3, DeepSeek Terminus.
-  - **Meta:** Llama 4 Scout, Llama 3.2 3B.
-  - **Alibaba:** Qwen3, Qwen3 Pro, Qwen3 32B.
-  - **Kimi:** Kimi K2.
-- **"Auto" Routing:** A smart selection feature that dynamically picks the most efficient available model from the user's allowed tier.
+### Database & Storage
 
-### 📄 2. Multi-Modal Vision & Document Parsing
-
-Users are not limited to text. ChatBox AI features a highly advanced data extraction workflow:
-
-- **PDFs & Documents:** Leverages `pdf-parse` and `mammoth` to seamlessly extract raw text from uploaded `.pdf` and `.docx` files, injecting them into the LLM context limits.
-- **Spreadsheets:** Uses `xlsx` to parse spreadsheet data for financial or tabular AI analysis.
-- **Vision & Image Understanding:** Utilizing Google Gemini's multimodal SDK (`@google/generative-ai`), users can upload images alongside text prompts. The system converts images to inline byte-data arrays, structures a composite prompt, and returns detailed visual analyses.
-
-### 🌐 3. Autonomous AI Website Builder
-
-A flagship workspace where users can generate, iterate, and deploy websites:
-
-- **Generative UI:** Describe a website, and the AI generates the HTML, Tailwind CSS, and React logic.
-- **Revision System:** Dedicated endpoints allow users to save iterations, preview drafts, roll back to previous versions, and push to production.
-- **Dedicated Credit Economy:** Website generations utilize a separate or heavily weighted credit system, tracked natively via Supabase migrations (`website_credits_migration.sql`).
-
-### 🎨 4. Image Generation & Processing Workspace
-
-- **Generation Engine:** Dedicated text-to-image prompt interfaces.
-- **Client-Side Background Removal:** Features an integrated `@imgly/background-removal` tool that isolates subjects from backgrounds without costing server-side compute.
-- **Editing Suite:** Includes `react-easy-crop` and `sharp` to modify, resize, and format images down to exact user specifications before saving or exporting.
-
-### 🗣️ 5. Voice AI & Real-time Interactivity
-
-- **Speech-to-Text (STT):** Voice dictation for hands-free prompting.
-- **Text-to-Speech (TTS):** Auditory playback of generated responses for accessibility and multitasking.
-
-### 🔍 6. Discover, Search, & Personal Library
-
-- **Live Web Search:** Integrates the Google Search API to fetch real-time internet context to augment LLM answers.
-- **Community Discover:** A social feed where users can share their best prompts, generated images, or website templates.
-- **Personal Library:** An organized vault of all historical user interactions, categorized by generation type (Chats, Images, Websites).
+- **Primary Database**: **Appwrite Cloud** (`appwrite`, `node-appwrite`) handles all NoSQL/Relational-style document collections.
+- **Asset Storage**: Appwrite Storage allows secure bucket uploads for images generated by AI or files uploaded by users.
 
 ---
 
-## 💎 The Engineering: Resiliency & Architecture
+## ✨ 2. Module Implementations & Capabilities
 
-ChatBox AI is architected differently than a standard wrapper. It incorporates enterprise-level resiliency algorithms natively in the codebase.
+### 💬 2.1 Multi-Model AI Chat Module
 
-### 🔄 Multi-Tier API Key Failover Mechanism
+- Directly integrates with `@google/genai` / `@google/generative-ai` for native Gemini Pro execution.
+- Routes through **OpenRouter** to dynamically access models from Anthropic (Claude), Meta (Llama), and OpenAI, allowing users to select parameters like token length and creativity.
+- Context is hydrated from the Appwrite `Chats` and `Library` collections, meaning long threads preserve historical memory.
+- Context injection handles uploading `.pdf`, `.docx`, and `.xlsx` directly to the chat context via the parser dependencies.
 
-Relying on a single API key for OpenRouter, A4F, or Google is a single point of failure. ChatBox AI utilizes a custom **Key Waterfall Algorithm** within `inngest/functions.js`:
+### 🎨 2.2 AI Image Generation & Processing
 
-- The system loads arrays of up to 5 API keys per service (`KEY_1`, `KEY_2`, `KEY_3`, etc.).
-- If a primary key experiences an `HTTP 429 (Rate Limit)`, `HTTP 403 (Out of Credits)`, or `HTTP 524 (Timeout)`, the system catches the exception and _immediately_ retries the exact payload on the next available key.
-- This ensures virtually **100% uptime** during extreme traffic spikes or unexpected API provider outages.
+- Connects to **Leonardo AI (FLUX Schnell)** for advanced text-to-image creation.
+- Stores output binaries automatically in Appwrite Storage, saving a referenced link in the `ImageGeneration` collection.
+- Includes client-side background removal capabilities using `@imgly/background-removal`.
 
-### 🕒 Asynchronous Event-Driven Jobs (Inngest)
+### 🌐 2.3 AI Website Builder
 
-ChatBox AI delegates heavy backend tasks to background queues using **Inngest**.
+- Leverages the `A4F.co` API to convert user conversational prompts into entire, deployable HTML/CSS websites.
+- Dedicated Appwrite collections (`website_projects`, `website_versions`, `website_conversations`) track the iteration history of a user's website, allowing rollback and conversational tweaking.
+- Has an isolated credit system (`website_user_credits`, `website_credit_packages`) specifically for website generation tasks.
 
-- **Job: `checkExpiredSubscriptions`:** Runs automatically via a CRON schedule (`0 0 * * *` - everyday at midnight UTC).
-- **Workflow:**
-  1. Queries Supabase for users whose `subscription_end_date` is in the past.
-  2. Protects master/admin accounts from modifications.
-  3. Downgrades the plan from `pro` -> `free`.
-  4. Resets the user's token/credit allowance to the standard free tier (e.g., 5000 credits).
-  5. Inserts an immutable audit log into the `usage_logs` table.
-- **Manual Triggers:** Includes `manualSubscriptionCheck` for testing and admin enforcement.
+### 🛡️ 2.4 Authentication & Security Controls
 
----
-
-## 🛠️ Technology Stack
-
-| Layer                | Technology                    | Purpose                                                    |
-| :------------------- | :---------------------------- | :--------------------------------------------------------- |
-| **Framework**        | Next.js 16+, React 18         | SSR, App Router, Full-stack API Endpoints                  |
-| **Database**         | Supabase (PostgreSQL)         | Real-time DB, Row Level Security (RLS), User Tables        |
-| **Authentication**   | Clerk                         | Secure, passwordless, social OAuth login routing           |
-| **Payments**         | Razorpay                      | Subscription billing and credit package purchases          |
-| **State & UI**       | Tailwind CSS, Radix UI        | Utility-first styling with accessible primitive components |
-| **Animations**       | Framer Motion, Three.js       | High-end micro-interactions, 3D canvas, visual flare       |
-| **Background Tasks** | Inngest                       | Reliable serverless CRON and event-driven queues           |
-| **AI Providers**     | Google GenAI, OpenRouter, A4F | Multi-model routing and LLM text/image streaming           |
-| **Data Parsing**     | mammoth, pdf-parse, xlsx      | Native document interrogation in the browser/edge          |
+- **Hybrid System**: Uses Firebase for raw credentialing (Email/Pass or Google OAuth).
+- **MFA Flow**:
+  1. User authenticates via Firebase.
+  2. Next.js validates if `mfa_enabled` is true in the Appwrite `Users` collection.
+  3. If true, server triggers `nodemailer` via `/api/auth/send-mfa-otp` to the user's secondary `mfa_email`.
+  4. The 6-digit OTP is stored transiently in the `mfa_otps` collection with a strict expiration.
+  5. UI gates access until `/api/auth/verify-mfa-otp` returns valid.
+  6. On success, an ephemeral `sessionStorage` token ensures they aren't prompted again in that tab.
 
 ---
 
-## 📁 Comprehensive Project Structure
+## 🗄️ 3. Appwrite Database Schema Map
 
-```text
-chatboxai-renewal/
-├── app/
-│   ├── (auth)/             # Clerk authentication layouts (Sign In, Sign Up)
-│   ├── (landing)/          # Highly animated marketing pages (Hero, Pricing, Stats, Features)
-│   ├── (routes)/           # Authenticated application workspaces
-│   │   ├── admin/          # Complex Admin dashboard charting users, models, & financials
-│   │   ├── app/            # Main AI conversational interface
-│   │   ├── discover/       # Social space for community templates and prompts
-│   │   ├── image-gen/      # Turnkey AI Image Generation studio
-│   │   ├── library/        # History and asset management for users
-│   │   ├── search/         # Web search components
-│   │   ├── voice-ai/       # Voice AI text-to-speech interaction rooms
-│   │   └── website-builder/# AI Website Creator workspace & site previewer
-│   └── api/                # Edge & Node API backend architecture
-│       ├── admin/          # Privileged endpoints (migrations, manual overrides)
-│       ├── ai/             # Primary LLM and Vision AI generation routes
-│       ├── inngest/        # Webhook listener for processing background tasks
-│       ├── razorpay/       # Webhooks processing payment verifications and subscriptions
-│       ├── website-builder/# Publishing, rollback, and revision APIs
-│       ├── google-search/  # Backend fetching for internet context
-│       ├── upload-image/   # Safe image ingestion endpoints
-│       └── ...             # Analyze, auth, subscriptions, user state management
-├── components/             # Radix-UI/shadcn unstyled primitives and global interfaces
-├── contexts/               # React Context Providers mapping User Auth, Plans, and Credits globally
-├── database/               # Supabase .sql migration arrays (plans, credits, reactions, metrics)
-├── hooks/                  # Customized modular React hooks (e.g., useModel, useCredit)
-├── inngest/                # Definitive cron-job functions & failover logic (`functions.js`, `client.js`)
-├── lib/                    # Core configuration and helpers (Audio effects, formatters)
-├── public/                 # Favicons, vector SVGs, and static uncompiled scripts
-└── services/               # System configurations: Shared model lists (`Shared.jsx`), Supabase client init
+The platform relies on **17 highly-structured collections** within the `chatboxai` database. All logic lives in `services/appwrite-collections.js`.
+
+| Collection Name               | Purpose                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `users`                       | Primary user identity, credits, plan type (`free`/`pro`), MFA settings, roles (`is_blocked`).           |
+| `library`                     | The "Session" or "Thread" wrapper for chats. Groups `chats` underneath it. Contains uploaded file data. |
+| `chats`                       | Individual AI/User exchange rows. Contains massive JSON objects (`aiResp`, `searchResult`).             |
+| `image_generation`            | Image prompt logs, resolution details, and Appwrite Storage `fileId` references.                        |
+| `mfa_otps`                    | Transient storage for 6-digit email OTPs, user email, and expiry timestamps.                            |
+| `subscriptions`               | Ledger of Razorpay transactions, transaction statuses (`active`, `expired`), start/end dates.           |
+| `usage_logs`                  | Audit trail for credit expenditure by model and operation type.                                         |
+| `bug_reports`                 | User-submitted ticketing.                                                                               |
+| `user_seen_updates`           | Tracks changelog item IDs that the user has acknowledged.                                               |
+| `user_subscription_status`    | Caching layer for fast UI checks on plan states.                                                        |
+| `website_projects`            | Container for a generated website, tracking the canonical published URL and active version.             |
+| `website_versions`            | HTML snapshot arrays for the website builder.                                                           |
+| `website_conversations`       | Discussion thread tied specifically to a `website_project` for iterative editing.                       |
+| `website_user_credits`        | Builder-specific credit ledger (distinct from standard chat credits).                                   |
+| `website_credit_packages`     | Pricing tiers for the website builder explicitly.                                                       |
+| `website_credit_transactions` | Purchase history spanning website generation quotas.                                                    |
+
+---
+
+## 🗺️ 4. API Endpoints Dictionary
+
+The `/app/api/` folder contains extensive routing modules:
+
+- `/api/auth/*`: MFA logic (`send-mfa-otp`, `verify-mfa-otp`).
+- `/api/account/*`: User account detail management.
+- `/api/admin/*`: 14+ endpoints for the admin panel to analyze usage, unblock users, force plan updates, etc.
+- `/api/ai/*`: Direct LLM passthroughs.
+- `/api/analyze/*` & `/api/research/*`: Deep-dive data processing routes using external search APIs and parsing libraries.
+- `/api/generate-image/*`: Webhooks and endpoints triggering Leonardo AI logic.
+- `/api/inngest`: The single webhook sink that the external Inngest executor hits to trigger background jobs.
+- `/api/library/*` & `/api/search/*`: Read/Write operations for chat histories and contextual data.
+- `/api/razorpay/*`: Webhook verification and order creation endpoints.
+- `/api/upload-file/*`: Connects incoming form-data to Appwrite buckets.
+- `/api/website-builder/*`: 16+ dedicated endpoints managing the A4F API requests and website generation versioning.
+
+---
+
+## ⚙️ 5. Running & Configuring the Project
+
+### Prerequisites
+
+- Node `18+`
+- Accounts for: Appwrite Cloud, Firebase, Razorpay, OpenRouter, Google Gemini, Inngest
+
+### Step 1: Environment Variables
+
+Duplicate `.env.example` to `.env.local` and configure your keys. Crucial keys include:
+
+```env
+# Database & Storage
+APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=
+APPWRITE_API_KEY=
+APPWRITE_DATABASE_ID=chatboxai
+APPWRITE_STORAGE_BUCKET_ID=mainStorage
+
+# Firebase Auth
+NEXT_PUBLIC_FIREBASE_API_KEY=
+# ...
+
+# External Services
+GOOGLE_API_KEY=
+OPENROUTER_API_KEY=
+NEXT_PUBLIC_A4F_API_KEY=
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+
+# Email Sender for MFA
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=
 ```
 
----
+_(Note: Every single Appwrite collection ID must also be mapped in the `.env.local`. Refer to `database/appwrite-setup-guide.md` for exact string values)._
 
-## 🗄️ Database Schemas Overview
-
-The Supabase PostgreSQL database is constructed using strict SQL Migrations (located in `/database/`). Key tables and interactions include:
-
-- `Users`: Tracks Clerk IDs, emails, current plan (`free` vs `pro`), credit balances, and subscription timelines.
-- `usage_logs`: Immutable ledger recording every single token/credit consumed per specific model, used for Admin analytics.
-- `subscriptions`: Links Razorpay payment IDs to User states.
-- `website_builder`: Heavily relies on version control logic to save DOM strings, custom CSS, block revisions, and deployment URLs.
-- **RLS Policies:** Detailed execution of Row-Level Security ensuring users can only fetch/delete their own conversational or image histories (`fix_rls_policies.sql`).
-
----
-
-## 📦 Detailed Installation & Setup Guide
-
-### 1. System Requirements
-
-- Node.js 18.17.0 or higher
-- npm, yarn, or pnpm
-- Supabase Project (Free tier covers development)
-- Clerk Dashboard Account
-- Razorpay Dashboard Account
-- API Keys: OpenRouter, Google Gemini, A4F.
-
-### 2. Repository Setup
+### Step 2: Install Packages
 
 ```bash
-git clone https://github.com/arpitariyan/clg-group-chatboxai.git
-cd clg-group-chatboxai
 npm install
 ```
 
-### 3. Environment Variables Configuration
+### Step 3: Run the Development Environments
 
-Duplicate the `.env.example` file and rename it to `.env`. Fill in tracking, authentication, and database IDs.
+Because ChatboxAI offloads heavy tasks to Inngest, you **must run two servers** locally.
 
-**IMPORTANT: The Failover Engine** requires you to define backup keys if you want true resiliency.
-
-```env
-# ======== CLERK AUTH ========
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
-CLERK_SECRET_KEY=sk_test_...
-
-# ======== DATABASE (SUPABASE) ========
-NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbG...
-
-# ======== AI KEY FAILOVER SETUP ========
-# Primary Keys
-NEXT_PUBLIC_GEMINI_API_KEY=AIzaSy...
-OPENROUTER_API_KEY=sk-or-v1-...
-A4F_API_KEY=sk-a4f-...
-
-# Backup Keys (System falls back if rate-limited)
-NEXT_PUBLIC_GEMINI_API_KEY_2=
-NEXT_PUBLIC_GEMINI_API_KEY_3=
-OPENROUTER_API_KEY_2=
-OPENROUTER_API_KEY_3=
-# ... etc up to 5 keys per service.
-
-# ======== PAYMENTS (RAZORPAY) ========
-NEXT_PUBLIC_RAZORPAY_KEY_ID=rzp_test_...
-RAZORPAY_KEY_SECRET=...
-```
-
-### 4. Database Migrations
-
-Go to your Supabase project dashboard -> SQL Editor.
-
-1. Copy the contents of `/database/safe_migration.sql` to initialize your schemas.
-2. Run additional migrations as needed (e.g., `image_generation_table.sql`, `plan_system_migration.sql`, `website_credits_migration.sql`) to layer on Pro functionalities.
-
-### 5. Running the Application Workflows
-
-**Start the Next.js Frontend/Backend Engine:**
+**Window 1: Next.js Frontend**
 
 ```bash
 npm run dev
 ```
 
-The localized App Router and edge functions will now run on `http://localhost:3000`.
+**Window 2: Inngest Executor**
 
-**6. ⚙️ Running & Configuring Inngest (Background Jobs)**
-
-[Inngest](https://inngest.com) is the core engine routing the background Cron Jobs (monthly subscription expirations) and AI Key failover operations natively across your Next.js application.
-
-### **Requirements for Inngest**
-
-To run Inngest successfully, you must have the following configuration in your `.env` file for your application to sync with the background workers.
-
-```env
-# Required for Next.js to authenticate the local/remote Inngest cluster
-INNGEST_EVENT_KEY=local
-INNGEST_SIGNING_KEY=local
+```bash
+npx inngest-cli@latest dev
 ```
 
-_(In production, replace `local` with your remote Inngest keys obtained from your Inngest Dashboard)._
+_(The Inngest CLI automatically detects the `/api/inngest` endpoint running on `localhost:3000` and syncs the jobs)._
 
-### **Running Inngest in Development**
+### Step 4: Access System
 
-Inngest acts as a co-runner during development. It needs the Next.js API server to be active.
-
-1. **Start the Next.js app first** (if you haven't already):
-
-   ```bash
-   npm run dev
-   # (Runs on http://localhost:3000)
-   ```
-
-2. **Start the Inngest Local Dev Server:**
-   Open a _second_ terminal window in the project root and run:
-
-   ```bash
-   npx inngest-cli@latest dev
-   ```
-
-3. **Verify the Sync:**
-   By default, the `inngest-cli` will search locally for Next.js instances running on port `3000` and link to your API route created at `app/api/inngest/route.js`.
-
-   Open your browser to the local Inngest Dashboard at **[http://localhost:8288](http://localhost:8288)**. You should immediately see the `Check and Downgrade Expired Subscriptions` and `Manual Subscription Expiry Check` workflows listed.
-
-### **Running Inngest in Production (Vercel/Next.js)**
-
-When deploying to a remote host like Vercel:
-
-1. Ensure your Production `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY` are placed in the Vercel Environment Variables UI.
-2. In your Inngest production dashboard, set your **Sync URL** to point to your live site webhook API endpoint:
-   `https://[YOUR_DOMAIN].com/api/inngest`
-3. Hit "Sync" in the Inngest dashboard to lock the Vercel app to your cron scheduling.
+Proceed to `http://localhost:3000` to interact with the application.
 
 ---
 
-## 🔧 Extending the Platform (Developer Notes)
+## 📦 6. Deployment Strategy
 
-### Adding a New AI Model
-
-To add a new model provider or version to the UI dropdown:
-
-1. Open up `/services/Shared.jsx`.
-2. Append your new model dictionary to the `AIModelsOption` array.
-3. Flag `isPro: true` if you want to lock it behind the Razorpay paywall.
-4. Ensure the backend parser inside `/app/api/ai/` routes correctly formats payloads for the new `modelApi` string.
-
-### Modifying Website Builder Blocks
-
-The AI website builder resolves JSON structural data into React layout objects. To modify the tailwind properties of AI-generated sites, look into the specific parser APIs (`/app/api/website-builder/generate/...`) and augment the system instructions.
+- **Platform**: Designed natively for **Vercel**.
+- **Edge Limits**: Since standard Vercel serverless functions time out after 10s-50s, all LLM polling and heavy generation is routed via `Inngest`. Ensure the `Inngest` webhook URL is set correctly in Vercel's production environment variables.
+- **Node Modules Size**: Large packages like `mammoth`, `sharp`, and `@imgly/background-removal` require the Build to utilize the standard Next.js standalone output to keep the lambda sizes under the 50MB limit on Vercel.
 
 ---
 
-## 🤝 Contributing
-
-Significant functional PRs should be strictly vetted, especially surrounding the API key failover blocks (`inngest/functions.js`) and credit transaction deductibles (`database/fix_credit_functions.sql`). Please branch, lint with `next lint`, and test UI components extensively utilizing the existing `shadcn-ui` design language.
-
-## 📄 License & Legal
-
-[Insert License Here] - Please review `app/privacy-policy/` and `app/terms-conditions/` to adjust your specific legal and GDPR compliance frameworks before pushing out to a Live production deployment.
-
----
-
-_Architected and developed with ❤️ by the ChatBox AI Engineering Team._
+Developed by the ChatboxAI Team. All code properties reserved.

@@ -1,11 +1,10 @@
 'use client'
 
 import Image from 'next/image'
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { toast } from 'react-toastify'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ArrowRight, Atom, AudioLines, Code2, Cpu, Globe, ImagePlus, Mic, MicOff, Paperclip, SearchCheck, Upload, X, FileText, FileImage, File, Crown } from 'lucide-react'
+import { toast } from '@/lib/alert'
+import { ArrowUp, AudioLines, Code2, Cpu, ImagePlus, Mic, MicOff, Paperclip, Plus, Upload, X, FileText, FileImage, File, Crown, Atom } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import {
@@ -17,7 +16,6 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AIModelsOption } from '@/services/Shared'
-import { supabase } from '@/services/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAdmin } from '@/contexts/AdminContext'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -25,6 +23,15 @@ import { useModel } from '@/contexts/ModelContext'
 import { useUserPlan } from '@/hooks/useUserPlan'
 import { v4 as uuidv4 } from 'uuid';
 import { useRouter } from 'next/navigation'
+import {
+    IMAGE_MODELS,
+    DEFAULT_MODEL_ID,
+    getModelById,
+    getDefaultModelForProvider,
+    getProviderIdByModelId,
+} from '@/lib/hf-image-config'
+
+const DEFAULT_IMAGE_MODEL_ID = getDefaultModelForProvider('leonardo')?.id || DEFAULT_MODEL_ID;
 
 function ChatBoxAiInput() {
 
@@ -38,10 +45,13 @@ function ChatBoxAiInput() {
     const [fileUploadError, setFileUploadError] = useState('');
     const [showFileUpload, setShowFileUpload] = useState(false);
 
+    const [showPlusMenu, setShowPlusMenu] = useState(false);
+    const plusMenuRef = useRef(null);
+
     // Image Generation States
     const [isImageGenMode, setIsImageGenMode] = useState(false);
     const [selectedRatio, setSelectedRatio] = useState("1:1");
-    const [imageGenModel, setImageGenModel] = useState("provider-4/flux-schnell");
+    const [imageGenModel, setImageGenModel] = useState(DEFAULT_IMAGE_MODEL_ID);
     const [imageUploadedFiles, setImageUploadedFiles] = useState([]);
     const [imageUploadProgress, setImageUploadProgress] = useState({});
     const [imageUploadError, setImageUploadError] = useState('');
@@ -125,6 +135,17 @@ function ChatBoxAiInput() {
         }
     }, [searchType, currentUser?.email, fetchResearchUsage]);
 
+    // Close plus menu when clicking outside
+    useEffect(() => {
+        const handler = (e) => {
+            if (plusMenuRef.current && !plusMenuRef.current.contains(e.target)) {
+                setShowPlusMenu(false);
+            }
+        };
+        if (showPlusMenu) document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showPlusMenu]);
+
     // Allowed file types and max file size
     const ALLOWED_FILE_TYPES = {
         'application/pdf': ['.pdf'],
@@ -144,47 +165,11 @@ function ChatBoxAiInput() {
     };
     const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 
-    // Aspect ratios for image generation
-    // Since we crop from 1024x1024, we can support any aspect ratio
-    const ASPECT_RATIOS = [
-        { label: "Square (1:1)", value: "1:1", width: 1024, height: 1024 },
-        { label: "Landscape (16:9)", value: "16:9", width: 1344, height: 756 },
-        { label: "Portrait (9:16)", value: "9:16", width: 756, height: 1344 },
-        { label: "Standard (4:3)", value: "4:3", width: 1024, height: 768 },
-        { label: "Photo (3:4)", value: "3:4", width: 768, height: 1024 },
-        { label: "Wide (21:9)", value: "21:9", width: 1344, height: 576 },
-        { label: "Cinema (2.35:1)", value: "2.35:1", width: 1344, height: 572 }
-    ];
-
-    // Image generation models
-    const IMAGE_MODELS = [
-        {
-            id: "chatboxai",
-            name: "ChatBoxAI v1.0",
-            desc: "Your custom ChatBoxAI model - high-quality image generation",
-            isFeatured: true
-        },
-        {
-            id: "provider-4/imagen-4",
-            name: "Imagen 4",
-            desc: "Google's latest high-quality image generation model"
-        },
-        {
-            id: "provider-4/flux-schnell",
-            name: "Flux Schnell",
-            desc: "Fast and efficient image generation model"
-        },
-        {
-            id: "provider-8/z-image",
-            name: "Z-Image",
-            desc: "Z-Image's powerful image generation model"
-        },
-        {
-            id: "provider-4/phoenix",
-            name: "Phoenix",
-            desc: "Phoenix's advanced image generation model"
-        }
-    ];
+    // Reset ratio to the model's first supported ratio whenever the model changes.
+    useEffect(() => {
+        const model = getModelById(imageGenModel);
+        setSelectedRatio(model.ratios[0].value);
+    }, [imageGenModel]);
 
     // Get file icon based on file type
     const getFileIcon = (file) => {
@@ -232,42 +217,23 @@ function ChatBoxAiInput() {
         return null;
     };
 
-    // Upload file to Supabase Storage
+    // Upload file via /api/upload-file endpoint
     const uploadFileToStorage = async (file) => {
-        try {
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${uuidv4()}.${fileExt}`;
-            const filePath = `uploads/${currentUser?.uid || 'anonymous'}/${fileName}`;
-
-            // Upload file to mainStorage bucket
-            const { data, error } = await supabase.storage
-                .from('mainStorage')
-                .upload(filePath, file, {
-                    cacheControl: '3600',
-                    upsert: false
-                });
-
-            if (error) {
-                throw error;
-            }
-
-            // Get public URL
-            const { data: { publicUrl } } = supabase.storage
-                .from('mainStorage')
-                .getPublicUrl(filePath);
-
-            return {
-                path: filePath,
-                publicUrl,
-                fileName: file.name,
-                fileType: file.type,
-                fileSize: file.size
-            };
-
-        } catch (error) {
-            console.error('Error uploading file:', error);
-            throw new Error(`Failed to upload ${file.name}: ${error.message}`);
+        const formData = new FormData();
+        formData.append('file', file);
+        const resp = await fetch('/api/upload-file', { method: 'POST', body: formData });
+        if (!resp.ok) {
+            const err = await resp.json();
+            throw new Error(err.error || 'Upload failed');
         }
+        const data = await resp.json();
+        return {
+            path: data.path,
+            publicUrl: data.publicUrl,
+            fileName: data.fileName || file.name,
+            fileType: data.fileType || file.type,
+            fileSize: data.fileSize || file.size
+        };
     };
 
     // Handle file drop
@@ -516,10 +482,11 @@ function ChatBoxAiInput() {
             const fileToRemove = uploadedFiles.find(f => f.id === fileId);
             if (fileToRemove?.uploadResult?.path) {
                 try {
-                    // Delete from storage
-                    await supabase.storage
-                        .from('mainStorage')
-                        .remove([fileToRemove.uploadResult.path]);
+                    await fetch('/api/upload-file', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: fileToRemove.uploadResult.path })
+                    });
                 } catch (error) {
                     console.error('Error deleting file:', error);
                 }
@@ -537,10 +504,11 @@ function ChatBoxAiInput() {
             const fileToRemove = imageUploadedFiles.find(f => f.id === fileId);
             if (fileToRemove?.uploadResult?.path) {
                 try {
-                    // Delete from storage
-                    await supabase.storage
-                        .from('mainStorage')
-                        .remove([fileToRemove.uploadResult.path]);
+                    await fetch('/api/upload-file', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: fileToRemove.uploadResult.path })
+                    });
                 } catch (error) {
                     console.error('Error deleting image file:', error);
                 }
@@ -612,17 +580,22 @@ function ChatBoxAiInput() {
                     };
 
                     recognitionInstance.onerror = (event) => {
-                        console.error('Speech recognition error:', event.error);
+                        const errorType = event?.error;
+
+                        // These are common non-fatal events when user pauses or stops quickly.
+                        if (errorType === 'no-speech' || errorType === 'aborted') {
+                            setIsListening(false);
+                            return;
+                        }
+
+                        console.error('Speech recognition error:', errorType);
                         setIsListening(false);
 
                         // Handle specific mobile errors
-                        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                        if (errorType === 'not-allowed' || errorType === 'service-not-allowed') {
                             alert('Microphone access denied. Please enable microphone permissions in your browser settings.');
-                        } else if (event.error === 'network') {
+                        } else if (errorType === 'network') {
                             alert('Network error. Please check your internet connection.');
-                        } else if (event.error === 'no-speech') {
-                            // Silently handle no-speech error for better UX
-                            // console.log('No speech detected');
                         }
                     };
 
@@ -717,7 +690,26 @@ function ChatBoxAiInput() {
                 }
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Failed to create website project');
+                    if (response.status === 402) {
+                        const weekly = data?.credits?.weekly ?? 0;
+                        const purchased = data?.credits?.purchased ?? 0;
+                        const total = data?.credits?.total ?? (weekly + purchased);
+
+                        toast.error(
+                            data?.message ||
+                            `Insufficient credits. Available: ${total} (Weekly: ${weekly}, Purchased: ${purchased}).`
+                        );
+
+                        // Help user quickly reach a place where they can upgrade/purchase.
+                        setTimeout(() => router.push('/#pricing'), 1200);
+                        setLoading(false);
+                        return;
+                    }
+
+                    const detailedError = data?.details
+                        ? `${data.error || 'Failed to create website project'}: ${data.details}`
+                        : (data?.error || 'Failed to create website project');
+                    throw new Error(detailedError);
                 }
 
                 // Clear input
@@ -784,53 +776,38 @@ function ChatBoxAiInput() {
                 }));
 
                 const libraryData = {
+                    created_at: new Date().toISOString(),
                     searchInput: userSearchInput || '',
                     userEmail: currentUser?.email || 'anonymous',
                     type: searchType || 'search',
                     libId: libId,
-                    selectedModel: selectedModel?.id || 'provider-8/gemini-2.0-flash',
-                    modelName: selectedModel?.name || 'Gemini 2.0 Flash'
+                    selectedModel: selectedModel?.modelApi || 'provider-8/gemini-2.0-flash',
+                    modelName: selectedModel?.name || 'Gemini 2.0 Flash',
+                    hasFiles: filePaths.length > 0,
+                    analyzedFilesCount: filePaths.length,
+                    processedAt: filePaths.length > 0 ? new Date().toISOString() : undefined
                 };
 
-                // ALWAYS store in localStorage first — this is the primary fallback
-                // so navigation works even when Supabase is unreachable.
-                localStorage.setItem(`search_${libId}`, JSON.stringify(libraryData));
                 if (filePaths.length > 0) {
-                    localStorage.setItem(`files_${libId}`, JSON.stringify(filePaths));
-                    libraryData.uploadedFiles = filePaths;
+                    libraryData.uploadedFiles = JSON.stringify(filePaths);
                 }
 
-                // Try to insert into the Library table as best-effort.
-                // If Supabase is down (TIMEOUT) we silently skip it and navigate anyway.
-                try {
-                    const { data, error } = await supabase.from('Library').insert([libraryData]).select();
+                const createLibraryResponse = await fetch('/api/search/library', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        libId,
+                        libraryData,
+                    }),
+                });
 
-                    if (error) {
-                        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed') || error.message?.includes('aborted');
-                        if (isTimeout) {
-                            // DB is unreachable — localStorage fallback will be used on the search page
-                            console.warn('[ChatBoxAi] Supabase unreachable, using localStorage fallback for libId:', libId);
-                        } else if (error.message?.includes('uploadedFiles') || error.message?.includes('column')) {
-                            // Column doesn't exist — retry without uploadedFiles
-                            const { uploadedFiles: _files, ...libraryDataWithoutFiles } = libraryData;
-                            const { error: retryError } = await supabase
-                                .from('Library')
-                                .insert([libraryDataWithoutFiles])
-                                .select();
-                            if (retryError) {
-                                console.warn('[ChatBoxAi] Library insert retry failed:', retryError.message);
-                            }
-                        } else {
-                            console.warn('[ChatBoxAi] Library insert failed (non-fatal):', error.message);
-                        }
-                    }
-                    // If data is returned (success) all is good; localStorage still has the backup
-                } catch (dbError) {
-                    // Any unexpected throw from Supabase — treat as non-fatal
-                    console.warn('[ChatBoxAi] Library insert threw (non-fatal):', dbError?.message || dbError);
+                if (!createLibraryResponse.ok) {
+                    const errorPayload = await createLibraryResponse.json().catch(() => ({}));
+                    throw new Error(errorPayload?.details || errorPayload?.error || 'Failed to create library record');
                 }
 
-                // Navigate regardless — the search page will use localStorage if DB record is missing
                 setUserSearchInput('');
                 setUploadedFiles([]);
                 router.push('/search/' + libId);
@@ -863,7 +840,8 @@ function ChatBoxAiInput() {
 
             try {
                 // First call the API to check limits and generate image
-                const selectedRatioData = ASPECT_RATIOS.find(r => r.value === selectedRatio);
+                const selectedRatioData = getModelById(imageGenModel).ratios.find(r => r.value === selectedRatio);
+                const providerToUse = getProviderIdByModelId(imageGenModel);
 
                 // Prepare reference image if uploaded
                 let referenceImagePath = null;
@@ -874,6 +852,10 @@ function ChatBoxAiInput() {
                 // Immediately redirect to image generation page while API processes in background
                 // This provides instant feedback to the user that generation has started
                 router.push('/image-gen/' + libId);
+                setImageUploadedFiles([]);
+                setImageUploadProgress({});
+                setImageUploadError('');
+                setShowImageUpload(false);
 
                 // Call API to initiate generation without waiting for it to complete
                 fetch('/api/generate-image', {
@@ -883,6 +865,7 @@ function ChatBoxAiInput() {
                     },
                     body: JSON.stringify({
                         prompt: userSearchInput,
+                        provider: providerToUse,
                         model: imageGenModel,
                         width: selectedRatioData.width,
                         height: selectedRatioData.height,
@@ -934,7 +917,7 @@ function ChatBoxAiInput() {
     };
 
     return (
-        <div className='flex flex-col h-full items-center justify-center mt-60 md:mt-60 px-4 overflow-hidden bg-background dark:bg-[oklch(0.2478_0_0)]'>
+        <div className='flex flex-col h-full items-center justify-center mt-60 md:mt-60 px-4 bg-background dark:bg-[oklch(0.2478_0_0)]'>
             <div
                 className="relative select-none"
                 onContextMenu={(e) => e.preventDefault()}
@@ -970,301 +953,387 @@ function ChatBoxAiInput() {
                     }}
                 />
             </div>
-            <div className='p-3 md:p-5 w-full max-w-2xl border border-border bg-card dark:bg-[oklch(0.3092_0_0)] rounded-2xl mt-6 md:mt-10'>
-                <div className='flex justify-between items-end'>
-                    <Tabs defaultValue="Search" className="w-full flex-1">
-                        <TabsContent value="Search">
-                            <textarea
-                                value={userSearchInput || ''}
-                                onChange={(e) => {
-                                    const value = e.target.value;
-                                    setUserSearchInput(value);
-                                    // Check for admin trigger
-                                    if (value.toLowerCase().trim() === 'admin') {
-                                        openAdminLogin();
-                                        setUserSearchInput('');
-                                    }
-                                }}
-                                placeholder={isImageGenMode ? 'Describe the image you want to generate...' : 'Ask anything...'}
-                                className='w-full p-2 outline-none resize-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden bg-transparent text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-300'
-                                rows={1}
-                                style={{ overflow: 'hidden' }}
-                                onInput={handleInput}
-                            />
-                        </TabsContent>
-                        {!isImageGenMode && (
-                            <TabsContent value="Research">
-                                <textarea
-                                    value={userSearchInput || ''}
-                                    onChange={(e) => {
-                                        const value = e.target.value;
-                                        setUserSearchInput(value);
-                                        // Check for admin trigger
-                                        if (value.toLowerCase().trim() === 'admin') {
-                                            openAdminLogin();
-                                            setUserSearchInput('');
-                                        }
-                                    }}
-                                    placeholder='Research anything...'
-                                    className='w-full p-2 outline-none resize-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden bg-transparent text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-300'
-                                    rows={1}
-                                    style={{ overflow: 'hidden' }}
-                                    onInput={handleInput}
-                                    disabled={!isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0}
-                                />
-                                {!isPro && researchUsage.monthlyLimit !== -1 && (
-                                    <div className="mt-2 text-xs text-muted-foreground dark:text-gray-300">
-                                        {researchUsage.remaining > 0
-                                            ? `${researchUsage.remaining} Research uses remaining this month`
-                                            : 'Monthly Research limit reached. Upgrade to Pro for unlimited Research.'}
-                                    </div>
-                                )}
-                            </TabsContent>
-                        )}
-                        {!isImageGenMode && (
-                            <TabsContent value="Code">
-                                <textarea
-                                    value={userSearchInput || ''}
-                                    onChange={(e) => {
-                                        const value = e.target.value;
-                                        setUserSearchInput(value);
-                                        // Check for admin trigger
-                                        if (value.toLowerCase().trim() === 'admin') {
-                                            openAdminLogin();
-                                            setUserSearchInput('');
-                                        }
-                                    }}
-                                    placeholder='Ask coding questions, debug code, or get programming help...'
-                                    className='w-full p-2 outline-none resize-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden bg-transparent text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-300'
-                                    rows={1}
-                                    style={{ overflow: 'hidden' }}
-                                    onInput={handleInput}
-                                />
-                            </TabsContent>
-                        )}
 
-                        <div className='flex justify-between items-end'>
+            {/* ── ChatGPT / Claude-style composer box ── */}
+            <div className='w-full max-w-2xl border border-border bg-card dark:bg-[oklch(0.3092_0_0)] rounded-2xl mt-6 md:mt-10'>
 
-                            {!isImageGenMode ? (
-                                <TabsList className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600">
-                                    <TabsTrigger value="Search" className='text-primary dark:text-white cursor-pointer dark:data-[state=active]:text-white' onClick={() => setSearchType('search')} >
-                                        <SearchCheck className="w-4 h-4" />
-                                        <span className="hidden md:inline ml-1">Search</span>
-                                    </TabsTrigger>
-                                    <TabsTrigger
-                                        value="Research"
-                                        className='text-primary dark:text-white cursor-pointer dark:data-[state=active]:text-white relative'
-                                        onClick={() => {
-                                            setSearchType('research');
-                                            if (currentUser?.email) fetchResearchUsage();
-                                            if (!isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0) {
-                                                toast.error('Monthly Research limit reached. Upgrade to Pro for unlimited Research.');
-                                            }
-                                        }}
-                                        disabled={!isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0}
-                                        title={!isPro && researchUsage.monthlyLimit !== -1
-                                            ? (researchUsage.remaining > 0
-                                                ? `${researchUsage.remaining} uses left this month`
-                                                : 'Monthly Research limit reached')
-                                            : undefined}
+                {/* Mode badges — only shown for non-default (non-search) modes */}
+                {(searchType === 'research' || searchType === 'code' || isImageGenMode) && (
+                    <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+                        {/* Research badge */}
+                        {searchType === 'research' && !isImageGenMode && (
+                            <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-blue-500/15 text-blue-400">
+                                <Atom className="h-3 w-3" />
+                                Deep Research
+                                <button
+                                    onClick={() => setSearchType('search')}
+                                    className="ml-1 rounded-full hover:bg-gray-500/10 p-0.5 transition-colors"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        )}
+                        {/* Website Builder badge */}
+                        {searchType === 'code' && !isImageGenMode && (
+                            <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-emerald-500/15 text-emerald-400">
+                                <Code2 className="h-3 w-3" />
+                                Website Builder
+                                <button
+                                    onClick={() => setSearchType('search')}
+                                    className="ml-1 rounded-full hover:bg-white/10 p-0.5 transition-colors"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        )}
+                        {/* Image Generation badge + inline ratio selector */}
+                        {isImageGenMode && (
+                            <div className="flex flex-wrap items-center gap-2">
+                                {/* <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-purple-500/15 text-purple-400">
+                                    <ImagePlus className="h-3 w-3" />
+                                    AI Image
+                                    <button
+                                        onClick={() => setIsImageGenMode(false)}
+                                        className="ml-1 rounded-full hover:bg-white/10 p-0.5 transition-colors"
                                     >
-                                        <Atom className="w-4 h-4" />
-                                        <span className="hidden md:inline ml-1">Research</span>
-                                        {!isPro && researchUsage.monthlyLimit !== -1 && (
-                                            <span className="ml-2 inline-flex items-center justify-center px-1.5 py-0.5 text-[10px] rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                                                {Math.max(0, researchUsage.remaining)}/{researchUsage.monthlyLimit}
-                                            </span>
-                                        )}
-                                    </TabsTrigger>
-                                    <TabsTrigger value="Code" className='text-primary dark:text-white cursor-pointer dark:data-[state=active]:text-white' onClick={() => setSearchType('code')} >
-                                        <Code2 className="w-4 h-4" />
-                                        <span className="hidden md:inline ml-1">Website</span>
-                                    </TabsTrigger>
-                                </TabsList>
-                            ) : (
-                                <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium text-foreground dark:text-white">Ratio:</span>
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger className='inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 hover:bg-accent hover:text-accent-foreground px-3 py-1.5 h-8 cursor-pointer border border-border dark:border-gray-600'>
-                                            {ASPECT_RATIOS.find(r => r.value === selectedRatio)?.label || selectedRatio}
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600">
-                                            <DropdownMenuLabel className="dark:text-white font-medium">
-                                                Aspect Ratios
-                                            </DropdownMenuLabel>
-                                            <DropdownMenuSeparator className="dark:border-gray-600" />
-                                            {ASPECT_RATIOS.map((ratio, index) => (
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </div> */}
+                                {/* Inline aspect ratio buttons */}
+                                <div className="flex items-center gap-1">
+                                    <span className="text-[11px] text-muted-foreground mr-1">Ratio:</span>
+                                    {getModelById(imageGenModel).ratios.map((ratio) => (
+                                        <button
+                                            key={ratio.value}
+                                            onClick={() => setSelectedRatio(ratio.value)}
+                                            className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                                                selectedRatio === ratio.value
+                                                    ? 'dark:bg-[oklch(0.2478_0_0)] text-white'
+                                                    : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 cursor-pointer'
+                                            }`}
+                                        >
+                                            {ratio.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* File attachment badges (regular files) */}
+                {!isImageGenMode && uploadedFiles.length > 0 && (
+                    <div className="flex flex-wrap gap-2 px-4 pt-3">
+                        {uploadedFiles.map((fileItem) => (
+                            <div key={fileItem.id} className="flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-1.5 text-xs">
+                                <Paperclip className="h-3 w-3 text-muted-foreground" />
+                                <span className="text-foreground dark:text-white">{fileItem.file.name}</span>
+                                <span className="text-muted-foreground">{(fileItem.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                                <button
+                                    onClick={() => removeFile(fileItem.id)}
+                                    className="ml-1 rounded-full p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Image attachment badges (image gen mode) */}
+                {isImageGenMode && imageUploadedFiles.length > 0 && (
+                    <div className="flex flex-wrap gap-2 px-4 pt-3">
+                        {imageUploadedFiles.map((fileItem) => (
+                            <div key={fileItem.id} className="flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-1.5 text-xs">
+                                <Paperclip className="h-3 w-3 text-muted-foreground" />
+                                <span className="text-foreground dark:text-white">{fileItem.file.name}</span>
+                                <span className="text-muted-foreground">{(fileItem.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                                <button
+                                    onClick={() => removeImageFile(fileItem.id)}
+                                    className="ml-1 rounded-full p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                >
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Textarea */}
+                <textarea
+                    value={userSearchInput || ''}
+                    onChange={(e) => {
+                        const value = e.target.value;
+                        setUserSearchInput(value);
+                        if (value.toLowerCase().trim() === 'admin') {
+                            openAdminLogin();
+                            setUserSearchInput('');
+                        }
+                    }}
+                    placeholder={
+                        isImageGenMode
+                            ? 'Describe the image you want to generate...'
+                            : searchType === 'research'
+                                ? 'What do you want to research deeply?'
+                                : searchType === 'code'
+                                    ? 'Describe the website you want to generate...'
+                                    : 'Ask anything...'
+                    }
+                    className='w-full resize-none bg-transparent px-4 pt-4 pb-2 outline-none min-h-11 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-300'
+                    rows={1}
+                    style={{ overflow: 'hidden' }}
+                    onInput={handleInput}
+                    disabled={!isImageGenMode && searchType === 'research' && !isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0}
+                />
+
+                {/* Research limit hint */}
+                {!isImageGenMode && searchType === 'research' && !isPro && researchUsage.monthlyLimit !== -1 && (
+                    <div className="px-4 pb-1 text-xs text-muted-foreground dark:text-gray-300">
+                        {researchUsage.remaining > 0
+                            ? `${researchUsage.remaining} Research uses remaining this month`
+                            : 'Monthly Research limit reached. Upgrade to Pro for unlimited Research.'}
+                    </div>
+                )}
+
+                {/* ── Bottom toolbar ── */}
+                <div className="flex items-center justify-between px-3 pb-3">
+                    <div className="flex items-center gap-1">
+
+                        {/* Plus menu */}
+                        <div ref={plusMenuRef} className="relative">
+                            <button
+                                onClick={() => setShowPlusMenu(!showPlusMenu)}
+                                className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200 ${
+                                    showPlusMenu
+                                        ? 'bg-foreground/15 text-foreground rotate-45'
+                                        : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 cursor-pointer'
+                                }`}
+                                title="More options"
+                            >
+                                <Plus className="h-5 w-5" />
+                            </button>
+
+                            {showPlusMenu && (
+                                <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl border border-border/50 dark:border-gray-600 bg-card dark:bg-[oklch(0.2478_0_0)] p-1.5 shadow-lg z-50">
+                                    {/* Attach Files */}
+                                    <button
+                                        onClick={() => {
+                                            if (isImageGenMode) setShowImageUpload(!showImageUpload);
+                                            else setShowFileUpload(!showFileUpload);
+                                            setShowPlusMenu(false);
+                                        }}
+                                        className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                                    >
+                                        <Paperclip className="h-4 w-4" />
+                                        Attach Files
+                                    </button>
+                                    {/* Research — hidden in image mode */}
+                                    {!isImageGenMode && (
+                                        <button
+                                            onClick={() => {
+                                                if (!isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0) {
+                                                    toast.error('Monthly Research limit reached. Upgrade to Pro for unlimited Research.');
+                                                    setShowPlusMenu(false);
+                                                    return;
+                                                }
+                                                setSearchType(searchType === 'research' ? 'search' : 'research');
+                                                if (currentUser?.email) fetchResearchUsage();
+                                                setShowPlusMenu(false);
+                                            }}
+                                            className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                                                searchType === 'research'
+                                                    ? 'bg-blue-500/15 text-blue-400'
+                                                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                                            }`}
+                                        >
+                                            <Atom className="h-4 w-4" />
+                                            Deep Research
+                                            {!isPro && researchUsage.monthlyLimit !== -1 && (
+                                                <span className="ml-auto inline-flex items-center justify-center px-1.5 py-0.5 text-[10px] rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                                                    {Math.max(0, researchUsage.remaining)}/{researchUsage.monthlyLimit}
+                                                </span>
+                                            )}
+                                        </button>
+                                    )}
+                                    {/* Website Builder — hidden in image mode */}
+                                    {!isImageGenMode && (
+                                        <button
+                                            onClick={() => {
+                                                setSearchType(searchType === 'code' ? 'search' : 'code');
+                                                setShowPlusMenu(false);
+                                            }}
+                                            className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                                                searchType === 'code'
+                                                    ? 'bg-emerald-500/15 text-emerald-400'
+                                                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                                            }`}
+                                        >
+                                            <Code2 className="h-4 w-4" />
+                                            Website Builder
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Create Image toggle */}
+                        {searchType !== 'code' && (
+                            <button
+                                onClick={() => setIsImageGenMode(!isImageGenMode)}
+                                className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium transition-colors ${
+                                    isImageGenMode
+                                        ? 'bg-purple-500/15 text-purple-400'
+                                        : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 cursor-pointer'
+                                }`}
+                                title="Create AI Image"
+                            >
+                                <ImagePlus className="h-4 w-4" />
+                                <span className="hidden sm:inline">Create Image</span>
+                            </button>
+                        )}
+
+                        <div className="mx-1 h-4 w-px bg-border/30" />
+
+                        {/* AI Model dropdown (Search/Research mode) */}
+                        {!isImageGenMode && searchType !== 'code' && (
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-gray-500/60 transition-colors cursor-pointer border-0 bg-transparent outline-none">
+                                    <Cpu className="h-4 w-4" />
+                                    <span className="hidden sm:inline">{selectedModel?.name || 'Model'}</span>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-hidden">
+                                    <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-inherit z-10">
+                                        AI Models
+                                    </DropdownMenuLabel>
+                                    <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-inherit z-10" />
+                                    <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
+                                        {AIModelsOption.map((model, index) => {
+                                            const isAccessible = model.modelApi === 'auto' || isPro || !model.isPro;
+                                            const requiresUpgrade = model.isPro && !isPro;
+                                            return (
                                                 <DropdownMenuItem
                                                     key={index}
-                                                    className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] cursor-pointer ${selectedRatio === ratio.value ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''}`}
-                                                    onClick={() => setSelectedRatio(ratio.value)}
+                                                    className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] ${isAccessible ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${selectedModel.id === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''}`}
+                                                    onClick={() => isAccessible && updateSelectedModel(model.id)}
+                                                    disabled={!isAccessible}
                                                 >
-                                                    <div className='w-full flex items-center justify-between'>
-                                                        <span className='text-sm'>{ratio.label}</span>
-                                                        {selectedRatio === ratio.value && (
+                                                    <div className='w-full'>
+                                                        <div className='flex items-center justify-between'>
+                                                            <div className='flex items-center gap-2'>
+                                                                <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
+                                                                {requiresUpgrade && (
+                                                                    <Crown className='w-3 h-3 text-yellow-500' title='Pro plan required' />
+                                                                )}
+                                                            </div>
+                                                            {selectedModel.id === model.id && (
+                                                                <div className='w-2 h-2 bg-green-500 rounded-full'></div>
+                                                            )}
+                                                        </div>
+                                                        <p className='text-xs text-gray-500 dark:text-gray-300 mt-1'>
+                                                            {model.desc}
+                                                            {requiresUpgrade && ' (Upgrade to Pro to unlock)'}
+                                                        </p>
+                                                    </div>
+                                                </DropdownMenuItem>
+                                            );
+                                        })}
+                                    </div>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                        )}
+                        {/* Image Model dropdown */}
+                        {isImageGenMode && (
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-gray-500/60 transition-colors cursor-pointer border-0 bg-transparent outline-none">
+                                    <Cpu className="h-4 w-4" />
+                                    <span className="hidden sm:inline">{IMAGE_MODELS.find(m => m.id === imageGenModel)?.name || 'Model'}</span>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-hidden">
+                                    <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-inherit z-10">
+                                        Image Models
+                                    </DropdownMenuLabel>
+                                    <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-inherit z-10" />
+                                    <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
+                                        {IMAGE_MODELS.map((model, index) => (
+                                            <DropdownMenuItem
+                                                key={index}
+                                                className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] cursor-pointer ${imageGenModel === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''}`}
+                                                onClick={() => setImageGenModel(model.id)}
+                                            >
+                                                <div className='w-full'>
+                                                    <div className='flex items-center justify-between'>
+                                                        <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
+                                                        {imageGenModel === model.id && (
                                                             <div className='w-2 h-2 bg-blue-500 rounded-full'></div>
                                                         )}
                                                     </div>
-                                                </DropdownMenuItem>
-                                            ))}
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                </div>
-                            )}
+                                                    <p className='text-xs text-gray-500 dark:text-gray-300 mt-1'>{model.desc}</p>
+                                                </div>
+                                            </DropdownMenuItem>
+                                        ))}
+                                    </div>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                        )}
 
+                        <div className="mx-1 h-4 w-px bg-border/30" />
 
-                            <div className='flex gap-1 md:gap-2 items-center'>
-                                {!isImageGenMode && searchType !== 'code' && (
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger className='inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-8 w-8 md:h-9 md:w-9 cursor-pointer relative'>
-                                            <Cpu className='text-gray-500 dark:text-white w-3 h-3 md:w-4 md:h-4' />
+                        {/* Mic button */}
+                        <button
+                            className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                                isListening
+                                    ? 'bg-red-100 text-red-500 dark:bg-red-900'
+                                    : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 cursor-pointer'
+                            }`}
+                            onClick={toggleSpeechRecognition}
+                            title={isListening ? 'Stop listening' : 'Start voice input'}
+                        >
+                            {isListening
+                                ? <MicOff className="h-4.5 w-4.5 animate-pulse" />
+                                : <Mic className="h-4.5 w-4.5" />
+                            }
+                        </button>
+                    </div>
 
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-hidden">
-                                            <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-inherit z-10">
-                                                AI Models
-                                            </DropdownMenuLabel>
-                                            <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-inherit z-10" />
-                                            <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
-                                                {AIModelsOption.map((model, index) => {
-                                                    const isAccessible = model.modelApi === 'auto' || isPro || !model.isPro;
-                                                    const requiresUpgrade = model.isPro && !isPro;
-                                                    
-                                                    return (
-                                                        <DropdownMenuItem
-                                                            key={index}
-                                                            className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] ${isAccessible ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${selectedModel.id === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''}`}
-                                                            onClick={() => isAccessible && updateSelectedModel(model.id)}
-                                                            disabled={!isAccessible}
-                                                        >
-                                                            <div className='w-full'>
-                                                                <div className='flex items-center justify-between'>
-                                                                    <div className='flex items-center gap-2'>
-                                                                        <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
-                                                                        {requiresUpgrade && (
-                                                                            <Crown className='w-3 h-3 text-yellow-500' title='Pro plan required' />
-                                                                        )}
-                                                                    </div>
-                                                                    {selectedModel.id === model.id && (
-                                                                        <div className='w-2 h-2 bg-green-500 rounded-full'></div>
-                                                                    )}
-                                                                </div>
-                                                                <p className='text-xs text-gray-500 dark:text-gray-300 mt-1'>
-                                                                    {model.desc}
-                                                                    {requiresUpgrade && ' (Upgrade to Pro to unlock)'}
-                                                                </p>
-                                                            </div>
-                                                        </DropdownMenuItem>
-                                                    );
-                                                })}
-                                            </div>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                )}
-
-                                {isImageGenMode && (
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger className='inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-8 w-8 md:h-9 md:w-9 cursor-pointer relative'>
-                                            <Cpu className='dark:text-white w-3 h-3 md:w-4 md:h-4' />
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-hidden">
-                                            <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-inherit z-10">
-                                                Image Generation Models
-                                            </DropdownMenuLabel>
-                                            <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-inherit z-10" />
-                                            <div className="max-h-64 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-400 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
-                                                {IMAGE_MODELS.map((model, index) => (
-                                                    <DropdownMenuItem
-                                                        key={index}
-                                                        className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] cursor-pointer ${imageGenModel === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''}`}
-                                                        onClick={() => setImageGenModel(model.id)}
-                                                    >
-                                                        <div className='w-full'>
-                                                            <div className='flex items-center justify-between'>
-                                                                <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
-                                                                {imageGenModel === model.id && (
-                                                                    <div className='w-2 h-2 bg-blue-500 rounded-full'></div>
-                                                                )}
-                                                            </div>
-                                                            <p className='text-xs text-gray-500 dark:text-gray-300 mt-1'>{model.desc}</p>
-                                                        </div>
-                                                    </DropdownMenuItem>
-                                                ))}
-                                            </div>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                )}
-
-                                {searchType !== 'code' && (
-                                    <Button variant='ghost' className='cursor-pointer h-8 w-8 md:h-9 md:w-9 p-0 dark:hover:bg-[oklch(0.3092_0_0)]' onClick={() => setIsImageGenMode(!isImageGenMode)}>
-                                        <ImagePlus className={`w-3 h-3 md:w-4 md:h-4 ${isImageGenMode ? 'text-gray-500' : 'dark:text-white'}`} />
-                                    </Button>
-                                )}
-                                <Button 
-                                    variant='ghost' 
-                                    className={`cursor-pointer h-8 w-8 md:h-9 md:w-9 p-0 ${searchType === 'code' ? 'opacity-50 cursor-not-allowed' : 'dark:hover:bg-[oklch(0.3092_0_0)]'}`}
-                                    onClick={() => isImageGenMode ? setShowImageUpload(!showImageUpload) : setShowFileUpload(!showFileUpload)}
-                                    disabled={searchType === 'code'}
-                                    title={searchType === 'code' ? 'Coming Soon' : ''}
-                                >
-                                    <Paperclip className='text-gray-500 dark:text-white w-3 h-3 md:w-4 md:h-4' />
-                                </Button>
-                                <Button
-                                    variant='ghost'
-                                    className={`cursor-pointer h-8 w-8 md:h-9 md:w-9 p-0 transition-colors ${isListening
-                                        ? 'bg-red-100 hover:bg-red-200 dark:bg-red-900 dark:hover:bg-red-800'
-                                        : 'hover:bg-gray-100 dark:hover:bg-[oklch(0.3092_0_0)]'
-                                        }`}
-                                    onClick={toggleSpeechRecognition}
-                                    title={isListening ? 'Stop listening' : 'Start voice input'}
-                                >
-                                    {isListening ?
-                                        <MicOff className='text-red-500 w-3 h-3 md:w-4 md:h-4 animate-pulse' /> :
-                                        <Mic className='text-gray-500 dark:text-white w-3 h-3 md:w-4 md:h-4' />
-                                    }
-                                </Button>
-                                <Button
-                                    className='cursor-pointer h-8 w-8 md:h-9 md:w-9 p-0 bg-primary hover:bg-primary/90 text-primary-foreground'
-                                    onClick={() => {
-                                        // If no input, navigate to Voice AI page
-                                        const hasInput = isImageGenMode ? userSearchInput : (userSearchInput || uploadedFiles.length > 0);
-                                        
-                                        if (!hasInput && !loading) {
-                                            router.push('/voice-ai');
-                                            return;
-                                        }
-                                        
-                                        // Otherwise, perform normal action
-                                        if (isImageGenMode) {
-                                            userSearchInput && !loading ? onImageGeneration() : null;
-                                        } else {
-                                            (userSearchInput || uploadedFiles.length > 0) && !loading ? onSearchQuery() : null;
-                                        }
-                                    }}
-                                    disabled={loading || (isImageGenMode && !canGenerateImage && !planLoading)}
-                                    title={
-                                        isImageGenMode && !canGenerateImage && !planLoading
-                                            ? userPlan?.limits?.message || 'Daily limit reached'
-                                            : !(isImageGenMode ? userSearchInput : (userSearchInput || uploadedFiles.length > 0))
-                                                ? 'Open Voice AI Assistant'
-                                                : undefined
-                                    }
-                                >
-                                    {isImageGenMode ? (
-                                        !userSearchInput ?
-                                            <AudioLines className='text-primary-foreground w-3 h-3 md:w-4 md:h-4' />
-                                            :
-                                            <ArrowRight className='text-primary-foreground w-3 h-3 md:w-4 md:h-4' />
-                                    ) : (
-                                        !(userSearchInput || uploadedFiles.length > 0) ?
-                                            <AudioLines className='text-primary-foreground w-3 h-3 md:w-4 md:h-4' />
-                                            :
-                                            <ArrowRight className='text-primary-foreground w-3 h-3 md:w-4 md:h-4' />
-                                    )}
-                                </Button>
-                            </div>
-                        </div>
-                    </Tabs>
+                    {/* Send / Voice button */}
+                    <button
+                        onClick={() => {
+                            const hasInput = isImageGenMode
+                                ? userSearchInput
+                                : (userSearchInput || uploadedFiles.length > 0);
+                            if (!hasInput && !loading) {
+                                router.push('/voice-ai');
+                                return;
+                            }
+                            if (loading) return;
+                            if (isImageGenMode) {
+                                if (userSearchInput) onImageGeneration();
+                            } else {
+                                if (userSearchInput || uploadedFiles.length > 0) onSearchQuery();
+                            }
+                        }}
+                        disabled={loading || (isImageGenMode && !canGenerateImage && !planLoading)}
+                        className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200 ${
+                            (isImageGenMode ? userSearchInput : (userSearchInput || uploadedFiles.length > 0))
+                                ? 'bg-foreground text-background hover:opacity-80'
+                                : 'text-muted-foreground cursor-pointer'
+                        }`}
+                        title={
+                            isImageGenMode && !canGenerateImage && !planLoading
+                                ? (userPlan?.limits?.message || 'Daily limit reached')
+                                : !(isImageGenMode ? userSearchInput : (userSearchInput || uploadedFiles.length > 0))
+                                    ? 'Open Voice AI Assistant'
+                                    : undefined
+                        }
+                    >
+                        {loading ? (
+                            <div className="h-4 w-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                        ) : (isImageGenMode ? userSearchInput : (userSearchInput || uploadedFiles.length > 0)) ? (
+                            <ArrowUp className="h-4 w-4" />
+                        ) : (
+                            <AudioLines className="h-4 w-4" />
+                        )}
+                    </button>
                 </div>
             </div>
 
@@ -1306,7 +1375,7 @@ function ChatBoxAiInput() {
                                 <Button 
                                     size="sm"
                                     className="bg-linear-to-r from-yellow-500 to-orange-500 text-white hover:from-yellow-600 hover:to-orange-600"
-                                    onClick={() => router.push('/pricing')}
+                                    onClick={() => router.push('/#pricing')}
                                 >
                                     <Crown className="w-3 h-3 mr-1" />
                                     Upgrade

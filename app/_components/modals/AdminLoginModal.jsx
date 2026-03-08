@@ -6,7 +6,7 @@ import { useAdmin } from '@/contexts/AdminContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { toast } from 'react-toastify';
+import { toast } from '@/lib/alert';
 import { Shield, Lock, Mail } from 'lucide-react';
 
 export default function AdminLoginModal() {

@@ -1,12 +1,11 @@
 'use client'
 
 import React, { useEffect, useState, useRef, useCallback, useMemo, useDeferredValue, startTransition } from 'react'
-import { Loader2Icon, LucideImage, LucideList, LucideSparkles, LucideVideo, Send, Mic, MicOff, Cpu, Atom, SearchCheck, Copy, ThumbsUp, ThumbsDown, VolumeX, Volume2, Check, ArrowDown, Paperclip, Upload, X, FileText, FileImage, File, Crown } from 'lucide-react';
+import { Loader2Icon, LucideImage, LucideList, LucideSparkles, LucideVideo, Send, Mic, MicOff, Cpu, Copy, ThumbsUp, ThumbsDown, VolumeX, Volume2, Check, ArrowDown, Paperclip, Upload, X, FileText, FileImage, File, Crown, Plus, ArrowUp, Atom } from 'lucide-react';
 import AnswerDisplay from './AnswerDisplay';
 import SourceList from './sourceList';
 import axios from 'axios';
 // import { SEARCH_RESULT } from '@/services/Shared';
-import { supabase } from '@/services/supabase';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useModel } from '@/contexts/ModelContext';
@@ -16,7 +15,7 @@ import VideoList from './VideoList';
 import { Button } from '@/components/ui/button';
 // import { Progress } from '@/components/ui/progress';
 import { useDropzone } from 'react-dropzone';
-import { toast } from 'react-toastify';
+import { toast } from '@/lib/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
     DropdownMenu,
@@ -104,7 +103,7 @@ const OptimizedTextarea = React.memo(({
             onKeyDown={onKeyDown}
             placeholder={placeholder}
             disabled={disabled}
-            className='w-full p-2 outline-none resize-none min-h-9 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden dark:text-white dark:placeholder-gray-400'
+            className='w-full px-4 pt-4 pb-2 outline-none resize-none min-h-9 text-sm md:text-base leading-relaxed scrollbar-hide overflow-hidden dark:text-white dark:placeholder-gray-400'
             rows={1}
             style={{ overflow: 'hidden' }}
         />
@@ -186,13 +185,14 @@ function DisplayResult({ searchInputRecord }) {
     const [submittedQuery, setSubmittedQuery] = useState(''); // Only updates when user submits
     
     const [loadingSearch, setLoadingSearch] = useState(false);
-    const [searchType, setSearchType] = useState("search");
+    const [searchType, setSearchType] = useState(searchInputRecord?.type === 'research' ? 'research' : 'search');
     const [isListening, setIsListening] = useState(false);
     const [recognition, setRecognition] = useState(null);
     const [isReading, setIsReading] = useState(false);
     const [copiedText, setCopiedText] = useState(null);
     const [chatReactions, setChatReactions] = useState({});
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+    const [showPlusMenu, setShowPlusMenu] = useState(false);
     const [uploadedFiles, setUploadedFiles] = useState([]);
     const [uploadProgress, setUploadProgress] = useState({});
     const [fileUploadError, setFileUploadError] = useState('');
@@ -203,6 +203,7 @@ function DisplayResult({ searchInputRecord }) {
     const textareaRef = useRef(null);
     const speechSynthesisRef = useRef(null);
     const scrollContainerRef = useRef(null);
+    const plusMenuRef = useRef(null);
     
     // Context and hooks
     const { libId } = useParams();
@@ -222,6 +223,92 @@ function DisplayResult({ searchInputRecord }) {
     }), []);
     
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+    const toBooleanValue = useCallback((value) => {
+        if (value === true || value === 'true' || value === 'liked') return true;
+        return false;
+    }, []);
+
+    const parseJsonField = useCallback((value, fallback = []) => {
+        if (Array.isArray(value) || (value && typeof value === 'object')) return value;
+        if (typeof value !== 'string') return fallback;
+        try {
+            return JSON.parse(value);
+        } catch {
+            return fallback;
+        }
+    }, []);
+
+    const normalizePrompt = useCallback((value = '') => {
+        return String(value || '')
+            .toLowerCase()
+            .replace(/[\u2018\u2019]/g, "'")
+            .replace(/[\u201C\u201D]/g, '"')
+            .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }, []);
+
+    const normalizeChatDocument = useCallback((chat) => ({
+        ...chat,
+        id: chat.$id || chat.id,
+        searchResult: parseJsonField(chat.searchResult, []),
+        processedFiles: parseJsonField(chat.processedFiles, []),
+        liked: toBooleanValue(chat.liked),
+        disliked: toBooleanValue(chat.disliked),
+    }), [parseJsonField, toBooleanValue]);
+
+    const buildChatDocument = useCallback((chatData) => {
+        const normalized = { ...chatData };
+
+        if (normalized.searchResult !== undefined) {
+            normalized.searchResult = typeof normalized.searchResult === 'string'
+                ? normalized.searchResult
+                : JSON.stringify(normalized.searchResult || []);
+        }
+
+        if (normalized.processedFiles !== undefined) {
+            normalized.processedFiles = typeof normalized.processedFiles === 'string'
+                ? normalized.processedFiles
+                : JSON.stringify(normalized.processedFiles || []);
+        }
+
+        if (normalized.liked !== undefined) {
+            normalized.liked = normalized.liked ? 'true' : 'false';
+        }
+
+        if (normalized.disliked !== undefined) {
+            normalized.disliked = normalized.disliked ? 'true' : 'false';
+        }
+
+        if (!normalized.analysisType) {
+            normalized.analysisType = 'text_only';
+        }
+
+        if (normalized.analyzedFilesCount === undefined || normalized.analyzedFilesCount === null) {
+            normalized.analyzedFilesCount = 0;
+        }
+
+        return normalized;
+    }, []);
+
+    const fetchSearchHistory = useCallback(async () => {
+        const response = await axios.get(`/api/search/history?libId=${encodeURIComponent(libId)}`);
+        return response?.data?.record || null;
+    }, [libId]);
+
+    const createChatRecord = useCallback(async (chatData) => {
+        const payload = {
+            chatData: {
+                ...buildChatDocument(chatData),
+                libId,
+            },
+            userEmail: currentUser?.email || null,
+        };
+
+        const response = await axios.post('/api/search/chats', payload);
+        return response?.data?.chat;
+    }, [buildChatDocument, libId, currentUser?.email]);
 
     // OPTIMIZATION: Memoized file icon function to prevent recreation
     const getFileIcon = useCallback((file) => {
@@ -438,8 +525,27 @@ function DisplayResult({ searchInputRecord }) {
 
     // OPTIMIZATION: Additional handler functions
     const handleSearchTypeChange = useCallback((type) => {
-        setSearchType(type);
-    }, []);
+        const normalizedType = type === 'research' ? 'research' : 'search';
+        setSearchType(normalizedType);
+
+        axios.patch('/api/search/library', {
+            libId,
+            updateData: { type: normalizedType }
+        }).catch((error) => {
+            console.warn('Failed to persist search type:', error?.message || error);
+        });
+    }, [libId]);
+
+    // Close plus menu when clicking outside
+    useEffect(() => {
+        const handler = (e) => {
+            if (plusMenuRef.current && !plusMenuRef.current.contains(e.target)) {
+                setShowPlusMenu(false);
+            }
+        };
+        if (showPlusMenu) document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showPlusMenu]);
 
     const handleFileUploadToggle = useCallback(() => {
         setShowFileUpload(!showFileUpload);
@@ -449,24 +555,132 @@ function DisplayResult({ searchInputRecord }) {
         updateSelectedModel(modelId);
     }, [updateSelectedModel]);
 
-    // OPTIMIZATION: Memoized function to check if conversation has file context
-    const hasConversationFiles = useCallback(() => {
-        const conversationFiles = localStorage.getItem(`conversation_files_${libId}`);
-        if (conversationFiles) {
+    const parseFileList = useCallback((value) => {
+        if (Array.isArray(value)) return value;
+        if (typeof value === 'string') {
             try {
-                const files = JSON.parse(conversationFiles);
-                return files && files.length > 0;
-            } catch (e) {
-                return false;
+                const parsed = JSON.parse(value);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                return [];
             }
         }
-        return false;
-    }, [libId]);
+        return [];
+    }, []);
+
+    const getCurrentUploadedFiles = useCallback(() => {
+        return (uploadedFiles || [])
+            .map((fileItem) => ({
+                path: fileItem?.uploadResult?.path,
+                publicUrl: fileItem?.uploadResult?.publicUrl,
+                fileName: fileItem?.uploadResult?.fileName,
+                fileType: fileItem?.uploadResult?.fileType,
+                fileSize: fileItem?.uploadResult?.fileSize,
+            }))
+            .filter((fileItem) => fileItem?.path || fileItem?.publicUrl);
+    }, [uploadedFiles]);
+
+    const dedupeFiles = useCallback((files = []) => {
+        const seen = new Set();
+        const merged = [];
+
+        files.forEach((item) => {
+            if (!item) return;
+            const key = item.path || item.publicUrl || item.fileName;
+            if (!key || seen.has(key)) return;
+            seen.add(key);
+            merged.push(item);
+        });
+
+        return merged;
+    }, []);
+
+    const getConversationFiles = useCallback(() => {
+        const files = [];
+
+        const conversationFiles = localStorage.getItem(`conversation_files_${libId}`);
+        if (conversationFiles) {
+            files.push(...parseFileList(conversationFiles));
+        }
+
+        const legacyFiles = localStorage.getItem(`files_${libId}`);
+        if (legacyFiles) {
+            files.push(...parseFileList(legacyFiles));
+        }
+
+        return dedupeFiles(files);
+    }, [libId, parseFileList, dedupeFiles]);
+
+    const resolveFileContext = useCallback(() => {
+        const currentFiles = getCurrentUploadedFiles();
+        const recordFiles = parseFileList(searchInputRecord?.uploadedFiles);
+        const loadedRecordFiles = parseFileList(searchResult?.uploadedFiles);
+        const storedFiles = getConversationFiles();
+
+        return dedupeFiles([
+            ...currentFiles,
+            ...recordFiles,
+            ...loadedRecordFiles,
+            ...storedFiles,
+        ]);
+    }, [getCurrentUploadedFiles, parseFileList, searchInputRecord?.uploadedFiles, searchResult?.uploadedFiles, getConversationFiles, dedupeFiles]);
+
+    const persistFileContext = useCallback(async (files) => {
+        const normalizedFiles = dedupeFiles(Array.isArray(files) ? files : []);
+        if (normalizedFiles.length === 0) return;
+
+        try {
+            localStorage.setItem(`conversation_files_${libId}`, JSON.stringify(normalizedFiles));
+        } catch (error) {
+            console.warn('Failed to store files in localStorage:', error);
+        }
+
+        try {
+            await axios.patch('/api/search/library', {
+                libId,
+                updateData: {
+                    uploadedFiles: normalizedFiles,
+                    hasFiles: true,
+                    analyzedFilesCount: normalizedFiles.length,
+                    type: searchType || searchInputRecord?.type || 'search',
+                }
+            });
+        } catch (error) {
+            console.warn('Failed to persist files to library:', error?.message || error);
+        }
+
+        setSearchResult((prev) => {
+            if (!prev) return prev;
+            return {
+                ...prev,
+                uploadedFiles: normalizedFiles,
+                hasFiles: true,
+            };
+        });
+    }, [dedupeFiles, libId, searchType, searchInputRecord?.type]);
+
+    // OPTIMIZATION: Memoized function to check if conversation has file context
+    const hasConversationFiles = useCallback(() => {
+        return resolveFileContext().length > 0;
+    }, [resolveFileContext]);
 
     // OPTIMIZATION: Memoized function to clear conversation files
     const clearConversationFiles = useCallback(() => {
         try {
             localStorage.removeItem(`conversation_files_${libId}`);
+            localStorage.removeItem(`files_${libId}`);
+
+            axios.patch('/api/search/library', {
+                libId,
+                updateData: {
+                    uploadedFiles: [],
+                    hasFiles: false,
+                    analyzedFilesCount: 0,
+                }
+            }).catch((error) => {
+                console.warn('Failed to clear persisted library files:', error?.message || error);
+            });
+
             // Force a re-render to update UI
             setRefreshTrigger(prev => prev + 1);
             toast.success('Conversation files cleared');
@@ -475,17 +689,42 @@ function DisplayResult({ searchInputRecord }) {
         }
     }, [libId]);
 
-    // OPTIMIZATION: Memoized function to get conversation files
-    const getConversationFiles = useCallback(() => {
-        const conversationFiles = localStorage.getItem(`conversation_files_${libId}`);
-        if (conversationFiles) {
-            try {
-                return JSON.parse(conversationFiles);
-            } catch (e) {
-                return [];
-            }
+    // Auto-clear file context after successful send so each message starts fresh.
+    const clearFileContextAfterSuccess = useCallback(async () => {
+        setUploadedFiles([]);
+        setUploadProgress({});
+        setFileUploadError('');
+
+        try {
+            localStorage.removeItem(`conversation_files_${libId}`);
+            localStorage.removeItem(`files_${libId}`);
+        } catch (error) {
+            console.warn('Failed to clear file context from localStorage:', error);
         }
-        return [];
+
+        try {
+            await axios.patch('/api/search/library', {
+                libId,
+                updateData: {
+                    uploadedFiles: [],
+                    hasFiles: false,
+                    analyzedFilesCount: 0,
+                }
+            });
+        } catch (error) {
+            console.warn('Failed to clear file context from library:', error?.message || error);
+        }
+
+        setSearchResult((prev) => {
+            if (!prev) return prev;
+            return {
+                ...prev,
+                uploadedFiles: [],
+                hasFiles: false,
+                analyzedFilesCount: 0,
+            };
+        });
+        setRefreshTrigger(prev => prev + 1);
     }, [libId]);
 
     // OPTIMIZATION: Memoized helper function
@@ -536,38 +775,34 @@ function DisplayResult({ searchInputRecord }) {
     
     // OPTIMIZATION: Memoized GetSearchRecords function
     const GetSearchRecords = useCallback(async () => {
-        let { data: Library, error } = await supabase
-            .from('Library')
-            .select(`
-                *,
-                Chats(*)
-            `)
-            .eq('libId', libId)
+        try {
+            const record = await fetchSearchHistory();
+            if (!record) return;
 
-        if (error) {
-            console.error('Error fetching data:', error);
-            return;
-        }
+            const chats = (record.Chats || []).map(normalizeChatDocument);
+            const normalizedRecord = { ...record, Chats: chats };
 
-        // console.log('Updated Library data:', Library[0]);
-        setSearchResult(Library[0]);
-        setRefreshTrigger(prev => prev + 1); // Force component refresh
+            // console.log('Updated Library data:', record);
+            setSearchResult(normalizedRecord);
+            setSearchType(record?.type === 'research' ? 'research' : 'search');
+            setRefreshTrigger(prev => prev + 1); // Force component refresh
 
-        // Load reactions for each chat
-        if (Library[0]?.Chats) {
+            // Load reactions for each chat
             const reactions = {};
-            Library[0].Chats.forEach(chat => {
+            chats.forEach(chat => {
                 reactions[chat.id] = {
-                    liked: chat.liked || false,
-                    disliked: chat.disliked || false
+                    liked: toBooleanValue(chat.liked),
+                    disliked: toBooleanValue(chat.disliked)
                 };
             });
             setChatReactions(reactions);
-        }
 
-        // Return the updated data for immediate use
-        return Library[0];
-    }, [libId]);
+            // Return the updated data for immediate use
+            return normalizedRecord;
+        } catch (error) {
+            console.error('Error fetching data:', error);
+        }
+    }, [fetchSearchHistory, normalizeChatDocument, toBooleanValue]);
 
     // OPTIMIZATION: Memoized startPollingForUpdates function
     const startPollingForUpdates = useCallback(() => {
@@ -577,54 +812,49 @@ function DisplayResult({ searchInputRecord }) {
 
         const interval = setInterval(async () => {
             try {
-                const { data: updatedLibrary, error } = await supabase
-                    .from('Library')
-                    .select(`
-                        *,
-                        Chats(*)
-                    `)
-                    .eq('libId', libId)
-                    .single();
+                const updatedLibrary = await fetchSearchHistory();
+                if (!updatedLibrary) return;
 
-                if (!error && updatedLibrary) {
-                    const currentChats = searchResult?.Chats || [];
-                    const updatedChats = updatedLibrary?.Chats || [];
-                    
-                    // Check if any chat has received an AI response by comparing chat IDs
-                    const hasNewAiResponse = updatedChats.some(updatedChat => {
-                        const currentChat = currentChats.find(c => c.id === updatedChat.id);
-                        return currentChat && !currentChat.aiResp && updatedChat.aiResp;
+                const updatedChats = (updatedLibrary.Chats || []).map(normalizeChatDocument);
+                const normalizedLibrary = { ...updatedLibrary, Chats: updatedChats };
+
+                const currentChats = searchResult?.Chats || [];
+                const hasChatCountChanged = updatedChats.length !== currentChats.length;
+
+                // Check if any chat has received an AI response by comparing chat IDs
+                const hasNewAiResponse = updatedChats.some(updatedChat => {
+                    const currentChat = currentChats.find(c => c.id === updatedChat.id);
+                    return currentChat && !currentChat.aiResp && updatedChat.aiResp;
+                });
+
+                // Check if all chats now have AI responses
+                const allChatsHaveAiResp = updatedChats.length > 0 && updatedChats.every(chat => chat.aiResp);
+
+                if (hasChatCountChanged || hasNewAiResponse || allChatsHaveAiResp) {
+                    // Update the search result state immediately to trigger re-render
+                    setSearchResult(normalizedLibrary);
+                    setRefreshTrigger(prev => prev + 1);
+
+                    // Update reactions state
+                    const reactions = {};
+                    updatedChats.forEach(chat => {
+                        reactions[chat.id] = {
+                            liked: toBooleanValue(chat.liked),
+                            disliked: toBooleanValue(chat.disliked)
+                        };
                     });
+                    setChatReactions(reactions);
 
-                    // Check if all chats now have AI responses
-                    const allChatsHaveAiResp = updatedChats.length > 0 && updatedChats.every(chat => chat.aiResp);
+                    // Set loading false once latest pending turn has a response
+                    const latestChat = updatedChats[updatedChats.length - 1];
+                    if (latestChat?.aiResp || hasNewAiResponse || allChatsHaveAiResp) {
+                        setLoadingSearch(false);
+                    }
 
-                    if (hasNewAiResponse || allChatsHaveAiResp) {
-                        // Update the search result state immediately to trigger re-render
-                        setSearchResult(updatedLibrary);
-                        setRefreshTrigger(prev => prev + 1);
-                        
-                        // Update reactions state
-                        const reactions = {};
-                        updatedChats.forEach(chat => {
-                            reactions[chat.id] = {
-                                liked: chat.liked || false,
-                                disliked: chat.disliked || false
-                            };
-                        });
-                        setChatReactions(reactions);
-
-                        // CRITICAL FIX: Set loadingSearch to false when AI response arrives
-                        // This ensures previous messages don't show loading state
-                        if (hasNewAiResponse || allChatsHaveAiResp) {
-                            setLoadingSearch(false);
-                        }
-
-                        // Stop polling if all chats have AI responses
-                        if (allChatsHaveAiResp) {
-                            clearInterval(interval);
-                            setPollingInterval(null);
-                        }
+                    // Stop polling if all chats have AI responses
+                    if (allChatsHaveAiResp) {
+                        clearInterval(interval);
+                        setPollingInterval(null);
                     }
                 }
             } catch (error) {
@@ -640,15 +870,15 @@ function DisplayResult({ searchInputRecord }) {
             setPollingInterval(null);
             setLoadingSearch(false); // Also set to false on timeout
         }, 5 * 60 * 1000);
-    }, [libId, searchResult, pollingInterval]);
+    }, [fetchSearchHistory, searchResult, pollingInterval, normalizeChatDocument, toBooleanValue]);
 
     // OPTIMIZATION: Memoized GenerateAIResp function
-    const GenerateAIResp = useCallback(async (formattedSearchResp, recordId, useDirectModel = false) => {
+    const GenerateAIResp = useCallback(async (formattedSearchResp, recordId, useDirectModel = false, overrideSearchInput = '') => {
         try {
             // console.log('Starting AI response generation for record ID:', recordId);
             
             // Get the search input - prioritize deferredUserInput for new searches, fallback to searchInputRecord
-            const searchInput = deferredUserInput?.trim() || searchInputRecord?.searchInput;
+            const searchInput = overrideSearchInput?.trim() || deferredUserInput?.trim() || searchInputRecord?.searchInput;
             // console.log('Search input for AI:', searchInput);
 
             if (!searchInput?.trim()) {
@@ -721,33 +951,33 @@ function DisplayResult({ searchInputRecord }) {
                         await GetSearchRecords();
 
                         // Get updated Data from Db and update state immediately
-                        const { data: updatedData, error } = await supabase
-                            .from('Chats')
-                            .select('*')
-                            .eq('id', recordId)
-                            .single();
+                        let updatedData = null;
+                        try {
+                            const updatedChatResp = await axios.get(`/api/search/chats?chatId=${encodeURIComponent(recordId)}`);
+                            updatedData = updatedChatResp?.data?.chat;
+                        } catch (fetchErr) {
+                            console.error('Error fetching updated chat data:', fetchErr);
+                        }
 
                         if (updatedData && updatedData.aiResp) {
                             // console.log('Updated chat data received:', updatedData);
-                            
+
                             // Update the current searchResult state immediately for instant UI update
                             setSearchResult(prevResult => {
                                 if (prevResult?.Chats) {
-                                    const updatedChats = prevResult.Chats.map(chat => 
+                                    const updatedChats = prevResult.Chats.map(chat =>
                                         chat.id === recordId ? { ...chat, aiResp: updatedData.aiResp } : chat
                                     );
                                     return { ...prevResult, Chats: updatedChats };
                                 }
                                 return prevResult;
                             });
-                            
+
                             // Trigger re-render with new timestamp to force update
                             setRefreshTrigger(prev => prev + 1);
-                            
+
                             // Then refresh the entire library to ensure consistency
                             await GetSearchRecords();
-                        } else if (error) {
-                            console.error('Error fetching updated chat data:', error);
                         }
                     } else if (runResp?.data?.data?.[0]?.status == 'failed') {
                         // Handle failed status
@@ -805,6 +1035,140 @@ function DisplayResult({ searchInputRecord }) {
         }
     }, [deferredUserInput, searchInputRecord, selectedModel, GetSearchRecords]);
 
+    const refreshCachedChatResult = useCallback(async ({ searchInput, mode, chatId, previousAiResp = '' }) => {
+        try {
+            if (!chatId || !searchInput?.trim()) {
+                setLoadingSearch(false);
+                return;
+            }
+
+            const uploadedFilesForAnalysis = resolveFileContext();
+            const hasFiles = uploadedFilesForAnalysis.length > 0;
+
+            if (hasFiles) {
+                const conversationHistory = searchResult?.Chats?.length > 0 ? searchResult.Chats : [];
+
+                let analysisResult;
+                try {
+                    analysisResult = await axios.post('/api/analyze', {
+                        prompt: searchInput,
+                        filePaths: uploadedFilesForAnalysis,
+                        libId,
+                        userEmail: currentUser?.email || null,
+                        conversationHistory,
+                    });
+                } catch (analyzeError) {
+                    analysisResult = await axios.post('/api/analyze-test', {
+                        prompt: searchInput,
+                        filePaths: uploadedFilesForAnalysis,
+                        libId,
+                        userEmail: currentUser?.email || null,
+                        conversationHistory,
+                    });
+                }
+
+                const analysisResp = analysisResult?.data || {};
+                const updateData = buildChatDocument({
+                    searchResult: analysisResp.searchResult || [],
+                    analysisType: 'file_analysis',
+                    analyzedFilesCount: analysisResp.analyzedFiles || uploadedFilesForAnalysis.length || 0,
+                    processedFiles: analysisResp.processedFiles || []
+                });
+
+                await axios.patch('/api/search/chats', { chatId, updateData });
+                await persistFileContext(uploadedFilesForAnalysis);
+                await GetSearchRecords();
+                startPollingForUpdates();
+                setLoadingSearch(false);
+                return;
+            }
+
+            let formattedSearchResp = [];
+            let useDirectModel = false;
+
+            if (mode === 'research') {
+                let researchResp;
+                try {
+                    const result = await axios.post('/api/research', {
+                        searchInput: searchInput,
+                        selectedModel: selectedModel,
+                        maxSources: 20,
+                        includeDiversity: true,
+                        user_email: currentUser?.email || null
+                    });
+                    researchResp = result.data;
+                } catch (error) {
+                    console.warn('Research refresh failed, switching to direct model:', error?.message || error);
+                    useDirectModel = true;
+                }
+
+                if (!useDirectModel && researchResp?.searchResult) {
+                    formattedSearchResp = researchResp.searchResult.map((item) => ({
+                        title: item?.title || '',
+                        description: item?.description || '',
+                        name: item?.displayLink || '',
+                        image: item?.thumbnail || '',
+                        url: item?.url || '',
+                        thumbnail: item?.thumbnail || '',
+                        deepResearch: true,
+                        summary: item?.summary || '',
+                        keyPoints: item?.keyPoints || [],
+                        contentExcerpt: item?.contentExcerpt || '',
+                        metadata: item?.metadata || {}
+                    }));
+                } else {
+                    useDirectModel = true;
+                    formattedSearchResp = [];
+                }
+            } else {
+                let searchResp;
+                try {
+                    const result = await axios.post('/api/google-search-api', {
+                        searchInput: searchInput,
+                        searchType: 'search'
+                    });
+                    searchResp = result.data;
+                } catch (error) {
+                    console.warn('Search refresh failed, switching to direct model:', error?.message || error);
+                    useDirectModel = true;
+                }
+
+                if (!useDirectModel && !(searchResp?.googleApiUnavailable || searchResp?.useDirectModel) && searchResp?.categorizedResults) {
+                    formattedSearchResp = searchResp?.categorizedResults?.web?.map((item) => ({
+                        title: item?.title || '',
+                        description: item?.snippet || '',
+                        name: item?.pagemap?.person?.[0]?.name || item?.displayLink || '',
+                        image: item?.pagemap?.imageobject?.[0]?.url || item?.pagemap?.cse_image?.[0]?.src || '',
+                        url: item?.link || '',
+                        thumbnail: item?.pagemap?.cse_thumbnail?.[0]?.src || ''
+                    })) || [];
+                } else {
+                    useDirectModel = true;
+                    formattedSearchResp = [];
+                }
+            }
+
+            const updateData = buildChatDocument({
+                searchResult: formattedSearchResp,
+                analysisType: 'text_only',
+                analyzedFilesCount: 0,
+                processedFiles: []
+            });
+
+            await axios.patch('/api/search/chats', { chatId, updateData });
+            await GetSearchRecords();
+            const refreshPrompt = previousAiResp?.trim()
+                ? `${searchInput}\n\nPrevious answer:\n${previousAiResp}\n\nProvide a new updated answer using latest available information.`
+                : searchInput;
+
+            await GenerateAIResp(formattedSearchResp, chatId, useDirectModel, refreshPrompt);
+            startPollingForUpdates();
+        } catch (error) {
+            console.error('Error refreshing cached response:', error);
+            setLoadingSearch(false);
+        }
+    }, [resolveFileContext, searchResult?.Chats, libId, selectedModel, currentUser?.email, buildChatDocument, persistFileContext, GetSearchRecords, GenerateAIResp, startPollingForUpdates]);
+
     // OPTIMIZATION: Memoized main search function with enhanced file analysis integration
     // Features:
     // 1. Files persist throughout the conversation for repeated analysis
@@ -828,49 +1192,8 @@ function DisplayResult({ searchInputRecord }) {
                 return;
             }
 
-            // Check if this is a file analysis request (has uploaded files)
-            let currentUploadedFiles = uploadedFiles.map(f => ({
-                path: f.uploadResult.path,
-                publicUrl: f.uploadResult.publicUrl,
-                fileName: f.uploadResult.fileName,
-                fileType: f.uploadResult.fileType,
-                fileSize: f.uploadResult.fileSize
-            }));
-            
-            let uploadedFilesForAnalysis = currentUploadedFiles.length > 0 ? currentUploadedFiles : searchInputRecord?.uploadedFiles;
-            
-            // Check for conversation-persistent files if no current files
-            if (!uploadedFilesForAnalysis || uploadedFilesForAnalysis.length === 0) {
-                // First check conversation-persistent files
-                const storedConversationFiles = localStorage.getItem(`conversation_files_${libId}`);
-                if (storedConversationFiles) {
-                    try {
-                        const conversationFiles = JSON.parse(storedConversationFiles);
-                        if (conversationFiles && conversationFiles.length > 0) {
-                            uploadedFilesForAnalysis = conversationFiles;
-                            // console.log('Using conversation-persistent files:', uploadedFilesForAnalysis);
-                        }
-                    } catch (e) {
-                        console.warn('Failed to parse conversation files from localStorage');
-                    }
-                }
-                
-                // Fallback to legacy file storage
-                if (!uploadedFilesForAnalysis || uploadedFilesForAnalysis.length === 0) {
-                    const storedFiles = localStorage.getItem(`files_${libId}`);
-                    if (storedFiles) {
-                        try {
-                            uploadedFilesForAnalysis = JSON.parse(storedFiles);
-                            // console.log('Loaded legacy files from localStorage:', uploadedFilesForAnalysis);
-                        } catch (e) {
-                            console.warn('Failed to parse legacy stored files from localStorage');
-                            uploadedFilesForAnalysis = [];
-                        }
-                    }
-                }
-            }
-
-            const hasFiles = uploadedFilesForAnalysis && uploadedFilesForAnalysis.length > 0;
+            const uploadedFilesForAnalysis = resolveFileContext();
+            const hasFiles = uploadedFilesForAnalysis.length > 0;
             // console.log('Has files for analysis:', hasFiles, 'File count:', uploadedFilesForAnalysis?.length || 0);
 
             if (hasFiles) {
@@ -888,6 +1211,7 @@ function DisplayResult({ searchInputRecord }) {
                             prompt: searchInput,
                             filePaths: uploadedFilesForAnalysis,
                             libId: libId,
+                            userEmail: currentUser?.email || null,
                             conversationHistory: conversationHistory // Add conversation context
                         });
                         // console.log('File analysis API response:', result.status, result.data);
@@ -898,6 +1222,7 @@ function DisplayResult({ searchInputRecord }) {
                             prompt: searchInput,
                             filePaths: uploadedFilesForAnalysis,
                             libId: libId,
+                            userEmail: currentUser?.email || null,
                             conversationHistory: conversationHistory // Add conversation context to fallback too
                         });
                         // console.log('File analysis test API response:', result.status, result.data);
@@ -910,39 +1235,28 @@ function DisplayResult({ searchInputRecord }) {
                         libId: libId,
                         searchResult: analysisResp.searchResult || [],
                         userSearchInput: searchInput || 'File Analysis',
-                        aiResp: analysisResp.aiResponse || analysisResp.answer
+                        aiResp: analysisResp.aiResponse || analysisResp.answer,
+                        analysisType: 'file_analysis',
+                        analyzedFilesCount: analysisResp.analyzedFiles || uploadedFilesForAnalysis.length || 0,
+                        processedFiles: analysisResp.processedFiles || []
                     };
 
                     // console.log('Inserting chat data for file analysis:', chatData);
 
-                    const { data: insertedChat, error: chatError } = await supabase
-                        .from('Chats')
-                        .insert([chatData])
-                        .select();
+                    const insertedChat = await createChatRecord(chatData);
 
-                    if (chatError) {
-                        console.error('Error inserting file analysis chat:', chatError);
-                        throw new Error(`Database insertion failed: ${chatError.message}`);
-                    }
+                    // console.log('Successfully inserted file analysis chat:', insertedChat.$id);
 
-                    // console.log('Successfully inserted file analysis chat:', insertedChat[0]);
-
-                    // Store files for future use in this conversation
-                    if (uploadedFilesForAnalysis && uploadedFilesForAnalysis.length > 0) {
-                        try {
-                            localStorage.setItem(`conversation_files_${libId}`, JSON.stringify(uploadedFilesForAnalysis));
-                            // console.log('Files stored for conversation:', libId);
-                        } catch (e) {
-                            console.warn('Failed to store files in localStorage:', e);
-                        }
-                    }
+                    await persistFileContext(uploadedFilesForAnalysis);
 
                     await GetSearchRecords();
+                    await clearFileContextAfterSuccess();
                     setLoadingSearch(false);
                     
                     // Clear input after successful search and update submitted query
                     setUserInput('');
                     setSubmittedQuery(searchInput);
+                    return;
 
                 } catch (error) {
                     console.error('File analysis failed:', error);
@@ -951,69 +1265,74 @@ function DisplayResult({ searchInputRecord }) {
                 }
 
             } else {
-                // Check if user is asking about files in a conversation that has previous file analysis
-                const conversationFiles = localStorage.getItem(`conversation_files_${libId}`);
-                let shouldUseFileAnalysis = false;
-                let storedFiles = [];
-                
-                if (conversationFiles) {
-                    try {
-                        storedFiles = JSON.parse(conversationFiles);
-                        // Check if the search input indicates file-related questions
-                        const fileRelatedKeywords = ['file', 'document', 'image', 'pdf', 'analyze', 'uploaded', 'attachment', 'content'];
-                        shouldUseFileAnalysis = fileRelatedKeywords.some(keyword => 
-                            searchInput.toLowerCase().includes(keyword.toLowerCase())
-                        );
-                        
-                        if (shouldUseFileAnalysis && storedFiles.length > 0) {
-                            // console.log('Detected file-related question with existing files, using file analysis flow');
-                            // Redirect to file analysis with conversation context
-                            uploadedFilesForAnalysis = storedFiles;
-                            
-                            // Get existing conversation history for context
-                            const conversationHistory = searchResult?.Chats?.length > 0 ? searchResult.Chats : [];
-                            
-                            let result = await axios.post('/api/analyze', {
-                                prompt: searchInput,
-                                filePaths: uploadedFilesForAnalysis,
-                                libId: libId,
-                                conversationHistory: conversationHistory
-                            });
-                            
-                            const analysisResp = result.data;
-
-                            const chatData = {
-                                libId: libId,
-                                searchResult: analysisResp.searchResult || [],
-                                userSearchInput: searchInput,
-                                aiResp: analysisResp.aiResponse || analysisResp.answer
-                            };
-
-                            const { data: insertedChat, error: chatError } = await supabase
-                                .from('Chats')
-                                .insert([chatData])
-                                .select();
-
-                            if (chatError) {
-                                console.error('Error inserting file analysis chat:', chatError);
-                                throw new Error(`Database insertion failed: ${chatError.message}`);
-                            }
-
-                            await GetSearchRecords();
-                            setLoadingSearch(false);
-                            
-                            // Clear input after successful search and update submitted query
-                            setUserInput('');
-                            setSubmittedQuery(searchInput);
-                            return; // Exit early since we handled this as file analysis
-                        }
-                    } catch (e) {
-                        console.warn('Error processing conversation files:', e);
-                    }
-                }
-
                 // Determine if this is Research mode or Search mode
                 const currentSearchType = searchType || searchInputRecord?.type || 'search';
+
+                // Reuse logic: check existing exact normalized match before external API calls
+                try {
+                    const reuseResp = await axios.post('/api/search/reuse', {
+                        query: searchInput,
+                        mode: currentSearchType,
+                        userEmail: currentUser?.email || null
+                    });
+
+                    const reuseMatch = reuseResp?.data?.match;
+                    if (reuseResp?.data?.hit && reuseMatch?.aiResp) {
+                        const cachedSearchResult = Array.isArray(reuseMatch.searchResult)
+                            ? reuseMatch.searchResult
+                            : [];
+
+                        const chatData = {
+                            libId: libId,
+                            searchResult: cachedSearchResult,
+                            userSearchInput: searchInput,
+                            aiResp: reuseMatch.aiResp,
+                            analysisType: 'text_only',
+                            analyzedFilesCount: 0,
+                            processedFiles: []
+                        };
+
+                        const insertedChat = await createChatRecord(chatData);
+                        await GetSearchRecords();
+                        await clearFileContextAfterSuccess();
+
+                        setUserInput('');
+                        setSubmittedQuery(searchInput);
+                        setLoadingSearch(false);
+
+                        const normalizedCurrent = normalizePrompt(searchInput);
+                        const normalizedMatched = normalizePrompt(reuseMatch.userSearchInput || '');
+                        const repeatCountForUser = Number(reuseMatch.repeatCountForUser || 0);
+
+                        // Required behavior:
+                        // 1st ask -> normal flow (no cache)
+                        // 2nd ask -> cache only (NO API refresh)
+                        // 3rd+ ask -> cache first, then refresh via API
+                        const shouldRefresh = !!reuseMatch.isOwnResult
+                            && normalizedCurrent
+                            && normalizedCurrent === normalizedMatched
+                            && repeatCountForUser >= 2;
+
+                        if (shouldRefresh) {
+                            toast.info('Showing previous result first. Refreshing with latest data...');
+                            const insertedChatId = insertedChat?.$id || insertedChat?.id;
+                            setTimeout(() => {
+                                setLoadingSearch(true);
+                                refreshCachedChatResult({
+                                    searchInput,
+                                    mode: currentSearchType,
+                                    chatId: insertedChatId,
+                                    previousAiResp: reuseMatch.aiResp || ''
+                                });
+                            }, 0);
+                        }
+
+                        return;
+                    }
+                } catch (reuseError) {
+                    console.warn('Reuse check failed, continuing with live API flow:', reuseError?.message || reuseError);
+                }
+
                 const isResearchMode = currentSearchType === 'research';
 
                 if (isResearchMode) {
@@ -1050,22 +1369,20 @@ function DisplayResult({ searchInputRecord }) {
                         const chatData = {
                             libId: libId,
                             searchResult: formattedSearchResp,
-                            userSearchInput: searchInput
+                            userSearchInput: searchInput,
+                            analysisType: 'text_only',
+                            analyzedFilesCount: 0,
+                            processedFiles: []
                         };
 
-                        const { data: insertedChat, error: chatError } = await supabase
-                            .from('Chats')
-                            .insert([chatData])
-                            .select();
-
-                        if (chatError) {
-                            console.error('Error inserting research chat:', chatError);
-                            throw new Error(`Database insertion failed: ${chatError.message || JSON.stringify(chatError)}`);
-                        }
+                        const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
-                        await GenerateAIResp(formattedSearchResp, insertedChat[0].id, true);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true);
                         startPollingForUpdates();
+                        await clearFileContextAfterSuccess();
+                        setUserInput('');
+                        setSubmittedQuery(searchInput);
                         return;
                     }
 
@@ -1075,7 +1392,12 @@ function DisplayResult({ searchInputRecord }) {
                         name: item?.displayLink || '',
                         image: item?.thumbnail || '',
                         url: item?.url || '',
-                        thumbnail: item?.thumbnail || ''
+                        thumbnail: item?.thumbnail || '',
+                        deepResearch: true,
+                        summary: item?.summary || '',
+                        keyPoints: item?.keyPoints || [],
+                        contentExcerpt: item?.contentExcerpt || '',
+                        metadata: item?.metadata || {}
                     }));
 
                     // console.log('📋 Formatted research sources:', formattedSearchResp.length, 'items');
@@ -1083,29 +1405,24 @@ function DisplayResult({ searchInputRecord }) {
                     const chatData = {
                         libId: libId,
                         searchResult: formattedSearchResp,
-                        userSearchInput: searchInput
+                        userSearchInput: searchInput,
+                        analysisType: 'text_only',
+                        analyzedFilesCount: 0,
+                        processedFiles: []
                     };
 
                     // console.log('💾 Inserting research chat data...');
 
-                    const { data: insertedChat, error: chatError } = await supabase
-                        .from('Chats')
-                        .insert([chatData])
-                        .select();
+                    const insertedChat = await createChatRecord(chatData);
 
-                    if (chatError) {
-                        console.error('Error inserting research chat:', chatError);
-                        throw new Error(`Database insertion failed: ${chatError.message || JSON.stringify(chatError)}`);
-                    }
-
-                    // console.log('✅ Research chat inserted:', insertedChat[0].id);
+                    // console.log('✅ Research chat inserted:', insertedChat.$id);
 
                     await GetSearchRecords();
 
                     // If the research API could not start synthesis (runId missing), fallback to client-side synthesis
                     if (!researchResp.runId) {
                         // console.log('🧪 Fallback: starting client-side synthesis since runId is missing');
-                        await GenerateAIResp(formattedSearchResp, insertedChat[0].id);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id);
                     }
 
                     // Start polling for AI response updates (either server-started or client fallback)
@@ -1143,22 +1460,17 @@ function DisplayResult({ searchInputRecord }) {
                         const chatData = {
                             libId: libId,
                             searchResult: formattedSearchResp,
-                            userSearchInput: searchInput
+                            userSearchInput: searchInput,
+                            analysisType: 'text_only',
+                            analyzedFilesCount: 0,
+                            processedFiles: []
                         };
 
-                        const { data: insertedChat, error: chatError } = await supabase
-                            .from('Chats')
-                            .insert([chatData])
-                            .select();
-
-                        if (chatError) {
-                            console.error('Error inserting chat:', chatError);
-                            throw new Error(`Database insertion failed: ${chatError.message || JSON.stringify(chatError)}`);
-                        }
+                        const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
                         // Pass flag to GenerateAIResp to use direct model call
-                        await GenerateAIResp(formattedSearchResp, insertedChat[0].id, true);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true);
                         startPollingForUpdates();
                     } else if (!searchResp || !searchResp.categorizedResults) {
                         throw new Error('Invalid search response from Google Search API');
@@ -1177,21 +1489,16 @@ function DisplayResult({ searchInputRecord }) {
                         const chatData = {
                             libId: libId,
                             searchResult: formattedSearchResp,
-                            userSearchInput: searchInput
+                            userSearchInput: searchInput,
+                            analysisType: 'text_only',
+                            analyzedFilesCount: 0,
+                            processedFiles: []
                         };
 
-                        const { data: insertedChat, error: chatError } = await supabase
-                            .from('Chats')
-                            .insert([chatData])
-                            .select();
-
-                        if (chatError) {
-                            console.error('Error inserting chat:', chatError);
-                            throw new Error(`Database insertion failed: ${chatError.message || JSON.stringify(chatError)}`);
-                        }
+                        const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
-                        await GenerateAIResp(formattedSearchResp, insertedChat[0].id, false);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, false);
                         startPollingForUpdates();
                     }
                 }
@@ -1200,6 +1507,7 @@ function DisplayResult({ searchInputRecord }) {
             // Clear input after successful search and update submitted query
             setUserInput('');
             setSubmittedQuery(searchInput);
+            await clearFileContextAfterSuccess();
 
         } catch (error) {
             console.error('Error in GetSearchApiResult:', error);
@@ -1230,7 +1538,7 @@ function DisplayResult({ searchInputRecord }) {
             toast.error(errorMessage);
             setLoadingSearch(false);
         }
-    }, [deferredUserInput, searchInputRecord, uploadedFiles, libId, searchType, GetSearchRecords, GenerateAIResp, startPollingForUpdates]);
+    }, [deferredUserInput, searchInputRecord, resolveFileContext, libId, searchType, currentUser?.email, createChatRecord, persistFileContext, GetSearchRecords, GenerateAIResp, startPollingForUpdates, normalizePrompt, refreshCachedChatResult, clearFileContextAfterSuccess]);
 
     // OPTIMIZATION: Input handler functions that depend on GetSearchApiResult
     const handleKeyDown = useCallback((e) => {
@@ -1422,10 +1730,14 @@ function DisplayResult({ searchInputRecord }) {
     // OPTIMIZATION: Update searchResult when searchInputRecord prop changes (stable)
     useEffect(() => {
         if (searchInputRecord) {
-            setSearchResult(searchInputRecord);
+            setSearchType(searchInputRecord?.type === 'research' ? 'research' : 'search');
+            setSearchResult({
+                ...searchInputRecord,
+                Chats: (searchInputRecord?.Chats || []).map(normalizeChatDocument)
+            });
             setRefreshTrigger(prev => prev + 1);
         }
-    }, [searchInputRecord?.libId]); // OPTIMIZATION: Only depend on libId to prevent excessive updates
+    }, [searchInputRecord?.libId, normalizeChatDocument]); // OPTIMIZATION: Only depend on libId to prevent excessive updates
 
     // OPTIMIZATION: Stable effect for handling search initialization
     useEffect(() => {
@@ -1450,9 +1762,13 @@ function DisplayResult({ searchInputRecord }) {
                     startPollingForUpdates();
                 }
             }
-            setSearchResult(searchInputRecord);
+            setSearchType(searchInputRecord?.type === 'research' ? 'research' : 'search');
+            setSearchResult({
+                ...searchInputRecord,
+                Chats: (searchInputRecord?.Chats || []).map(normalizeChatDocument)
+            });
         }
-    }, [searchInputRecord?.libId]); // OPTIMIZATION: Only depend on libId
+    }, [searchInputRecord?.libId, normalizeChatDocument]); // OPTIMIZATION: Only depend on libId
 
     // Cleanup polling interval when component unmounts
     useEffect(() => {
@@ -1698,25 +2014,24 @@ function DisplayResult({ searchInputRecord }) {
             let updateData = {};
 
             if (reactionType === 'like') {
+                const nextLiked = !toBooleanValue(currentReaction.liked);
                 updateData = {
-                    liked: !currentReaction.liked,
-                    disliked: false // Remove dislike if liking
+                    liked: nextLiked ? 'true' : 'false',
+                    disliked: 'false' // Remove dislike if liking
                 };
             } else if (reactionType === 'dislike') {
+                const nextDisliked = !toBooleanValue(currentReaction.disliked);
                 updateData = {
-                    disliked: !currentReaction.disliked,
-                    liked: false // Remove like if disliking
+                    disliked: nextDisliked ? 'true' : 'false',
+                    liked: 'false' // Remove like if disliking
                 };
             }
 
             // Update in database
-            const { error } = await supabase
-                .from('Chats')
-                .update(updateData)
-                .eq('id', chatId);
-
-            if (error) {
-                console.error('Error updating reaction:', error);
+            try {
+                await axios.patch('/api/search/chats', { chatId, updateData });
+            } catch (updateErr) {
+                console.error('Error updating reaction:', updateErr);
                 alert('Failed to update reaction. Please try again.');
                 return;
             }
@@ -1726,7 +2041,8 @@ function DisplayResult({ searchInputRecord }) {
                 ...prev,
                 [chatId]: {
                     ...currentReaction,
-                    ...updateData
+                    liked: toBooleanValue(updateData.liked),
+                    disliked: toBooleanValue(updateData.disliked)
                 }
             }));
 
@@ -1734,7 +2050,7 @@ function DisplayResult({ searchInputRecord }) {
             console.error('Reaction error:', error);
             alert('Failed to process reaction. Please try again.');
         }
-    }, [chatReactions]); // OPTIMIZATION: Proper dependencies
+    }, [chatReactions, toBooleanValue]); // OPTIMIZATION: Proper dependencies
 
     // OPTIMIZATION: Memoized tab calculations
     const tabsWithBadges = useMemo(() => 
@@ -1792,7 +2108,7 @@ function DisplayResult({ searchInputRecord }) {
                         ) : null}
                     </div>
 
-                    <div className='flex flex-wrap items-center mb-35 gap-2 mt-6'>
+                    <div className='flex flex-wrap items-center mb-30 gap-2 mt-6'>
                         <Button
                             className='cursor-pointer text-xs sm:text-sm px-2 sm:px-4 py-1 sm:py-2 h-auto min-h-8'
                             variant={copiedText === chat.id ? 'default' : 'outline'}
@@ -1874,152 +2190,195 @@ function DisplayResult({ searchInputRecord }) {
                     </div>
                 )}
 
-                <div className='bg-white dark:bg-[oklch(0.3092_0_0)] w-[calc(100%-24px)] md:w-full max-w-sm md:max-w-md lg:max-w-xl xl:max-w-3xl border border-gray-200 dark:border-gray-700 rounded-lg shadow-md p-2 md:p-3 fixed bottom-3 md:bottom-8 left-1/2 -translate-x-1/2 z-40'>
+                <div className='bg-white dark:bg-[oklch(0.3092_0_0)] w-[calc(100%-24px)] md:w-full max-w-sm md:max-w-md lg:max-w-xl xl:max-w-3xl border border-gray-200 dark:border-gray-700 rounded-2xl shadow-md fixed bottom-3 md:bottom-8 left-1/2 -translate-x-1/2 z-40'>
 
-                    <Tabs defaultValue="Search" className="w-full min-w-0">
-                        <div className='flex justify-between items-end gap-2 min-w-0'>
-                            <div className="flex-1 min-w-0">
-                                <TabsContent value="Search" className="mt-0">
-                                    <OptimizedTextarea
-                                        value={userInput}
-                                        onChange={handleUserInputChange}
-                                        onKeyDown={handleKeyDown}
-                                        placeholder="Ask anything..."
-                                        disabled={loadingSearch}
-                                        textareaRef={textareaRef}
-                                    />
-                                </TabsContent>
-                                <TabsContent value="Research" className="mt-0">
-                                    <OptimizedTextarea
-                                        value={userInput}
-                                        onChange={handleUserInputChange}
-                                        onKeyDown={handleKeyDown}
-                                        placeholder="Research anything..."
-                                        disabled={loadingSearch}
-                                        textareaRef={textareaRef}
-                                    />
-                                </TabsContent>
-                                <TabsList className="h-7 p-0.5 mt-1 dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600">
-                                    <TabsTrigger value="Search" className='text-primary cursor-pointer text-xs px-2 py-1 h-6' onClick={() => handleSearchTypeChange('search')} >
-                                        <SearchCheck className="w-3 h-3" />
-                                        <span className="hidden sm:inline ml-1">Search</span>
-                                    </TabsTrigger>
-                                    <TabsTrigger value="Research" className='text-primary cursor-pointer text-xs px-2 py-1 h-6' onClick={() => handleSearchTypeChange('research')} >
-                                        <Atom className="w-3 h-3" />
-                                        <span className="hidden sm:inline ml-1">Research</span>
-                                    </TabsTrigger>
-                                </TabsList>
-                            </div>
-
-                            <div className='flex gap-1 items-center shrink-0 ml-2'>
-                                {/* AI Model Selector */}
-                                <DropdownMenu>
-                                    <DropdownMenuTrigger className='inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-7 w-7 cursor-pointer relative'>
-                                        <Cpu className='text-gray-500 dark:text-gray-400 w-3 h-3' />
-                                        {/* {selectedModel?.name && (
-                                            <div className="absolute -top-1 -right-1 text-xs bg-blue-500 text-white rounded-full px-1 min-w-4 h-4 flex items-center justify-center" style={{ fontSize: '8px' }}>
-                                                {selectedModel.name === 'Best' ? '★' : selectedModel.name.charAt(0)}
-                                            </div>
-                                        )} */}
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-y-auto">
-                                        <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-white dark:bg-[oklch(0.2478_0_0)] z-10">
-                                            AI Models
-                                        </DropdownMenuLabel>
-                                        <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-white dark:bg-[oklch(0.2478_0_0)] z-10" />
-                                        <div className="space-y-1">
-                                            {AIModelsOption.map((model, index) => {
-                                                const isAccessible = model.modelApi === 'auto' || isPro || !model.isPro;
-                                                const requiresUpgrade = model.isPro && !isPro;
-                                                
-                                                return (
-                                                    <DropdownMenuItem 
-                                                        key={index}
-                                                        className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] ${isAccessible ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${
-                                                            selectedModel.id === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''
-                                                        }`}
-                                                        onClick={() => isAccessible && handleModelSelect(model.id)}
-                                                        disabled={!isAccessible}
-                                                    >
-                                                        <div className='w-full'>
-                                                            <div className='flex items-center justify-between'>
-                                                                <div className='flex items-center gap-2'>
-                                                                    <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
-                                                                    {requiresUpgrade && (
-                                                                        <Crown className='w-3 h-3 text-yellow-500' title='Pro plan required' />
-                                                                    )}
-                                                                </div>
-                                                                {selectedModel.id === model.id && (
-                                                                    <div className='w-2 h-2 bg-green-500 rounded-full'></div>
-                                                                )}
-                                                            </div>
-                                                            <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
-                                                                {model.desc}
-                                                                {requiresUpgrade && ' (Upgrade to Pro to unlock)'}
-                                                            </p>
-                                                        </div>
-                                                    </DropdownMenuItem>
-                                                );
-                                            })}
-                                        </div>
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-
-                                
-                                <Button
-                                    variant='ghost'
-                                    className={`cursor-pointer h-7 w-7 p-0 hover:bg-gray-100 dark:hover:bg-gray-800 relative ${
-                                        hasConversationFiles() ? 'bg-blue-50 dark:bg-blue-900/20' : ''
-                                    }`}
-                                    onClick={handleFileUploadToggle}
-                                    title="Attach files"
+                    {/* Research mode badge — only shown when research is active */}
+                    {searchType === 'research' && (
+                        <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+                            <div className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium bg-blue-500/15 text-blue-400">
+                                <Atom className="h-3 w-3" />
+                                Deep Research
+                                <button
+                                    onClick={() => handleSearchTypeChange('search')}
+                                    className="ml-1 rounded-full hover:bg-white/10 p-0.5 transition-colors"
                                 >
-                                    <Paperclip className={`w-3 h-3 ${
-                                        hasConversationFiles() ? 'text-blue-500 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400'
-                                    }`} />
-                                    {(uploadedFiles.length > 0 || hasConversationFiles()) && (
-                                        <div className="absolute -top-1 -right-1 text-xs bg-blue-500 text-white rounded-full px-1 min-w-4 h-4 flex items-center justify-center" style={{ fontSize: '8px' }}>
-                                            {uploadedFiles.length > 0 ? uploadedFiles.length : getConversationFiles().length}
-                                        </div>
-                                    )}
-                                </Button>
-
-                                {/* Microphone Button */}
-                                <Button
-                                    variant='ghost'
-                                    className={`cursor-pointer h-7 w-7 p-0 transition-colors ${isListening
-                                        ? 'bg-red-100 hover:bg-red-200 dark:bg-red-900 dark:hover:bg-red-800'
-                                        : 'hover:bg-gray-100 dark:hover:bg-gray-800'
-                                        }`}
-                                    onClick={toggleSpeechRecognition}
-                                    title={isListening ? 'Stop listening' : 'Start voice input'}
-                                >
-                                    {isListening ?
-                                        <MicOff className='text-red-500 w-3 h-3 animate-pulse' /> :
-                                        <Mic className='text-gray-500 dark:text-gray-400 w-3 h-3' />
-                                    }
-                                </Button>
-
-
-                                {/* Submit Button */}
-                                {deferredUserInput?.trim() && (
-                                    <Button
-                                        size="sm"
-                                        className="flex items-center cursor-pointer h-7 w-7 p-0 shrink-0"
-                                        onClick={handleSendClick}
-                                        disabled={loadingSearch || !deferredUserInput?.trim()}
-                                    >
-                                        {loadingSearch ? (
-                                            <Loader2Icon className='animate-spin w-3 h-3' />
-                                        ) : (
-                                            <Send className="w-3 h-3" />
-                                        )}
-                                    </Button>
-                                )}
+                                    <X className="h-3 w-3" />
+                                </button>
                             </div>
                         </div>
-                    </Tabs>
+                    )}
 
+                    {/* File attachment badges */}
+                    {uploadedFiles.length > 0 && (
+                        <div className="flex flex-wrap gap-2 px-4 pt-3">
+                            {uploadedFiles.map((fileItem) => (
+                                <div key={fileItem.id} className="flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-1.5 text-xs">
+                                    <Paperclip className="h-3 w-3 text-muted-foreground" />
+                                    <span className="text-foreground dark:text-white">{fileItem.file.name}</span>
+                                    <span className="text-muted-foreground">{(fileItem.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                                    <button
+                                        onClick={() => removeFile(fileItem.id)}
+                                        className="ml-1 rounded-full p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                    >
+                                        <X className="h-3 w-3" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    {/* Textarea */}
+                    <OptimizedTextarea
+                        value={userInput}
+                        onChange={handleUserInputChange}
+                        onKeyDown={handleKeyDown}
+                        placeholder={searchType === 'research' ? 'What do you want to research deeply?' : 'Ask anything...'}
+                        disabled={loadingSearch}
+                        textareaRef={textareaRef}
+                    />
+
+                    {/* ── Bottom toolbar ── */}
+                    <div className="flex items-center justify-between px-3 pb-3">
+                        <div className="flex items-center gap-1">
+
+                            {/* Plus menu */}
+                            <div ref={plusMenuRef} className="relative">
+                                <button
+                                    onClick={() => setShowPlusMenu(!showPlusMenu)}
+                                    className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200 ${
+                                        showPlusMenu
+                                            ? 'bg-foreground/15 text-foreground rotate-45'
+                                            : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 coursor-pointer'
+                                    }`}
+                                    title="More options"
+                                >
+                                    <Plus className="h-5 w-5" />
+                                </button>
+
+                                {showPlusMenu && (
+                                    <div className="absolute bottom-full left-0 mb-2 w-52 rounded-xl border border-border/50 dark:border-gray-600 bg-card dark:bg-[oklch(0.2478_0_0)] p-1.5 shadow-lg z-50">
+                                        {/* Attach Files */}
+                                        <button
+                                            onClick={() => { handleFileUploadToggle(); setShowPlusMenu(false); }}
+                                            className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                                                hasConversationFiles() || uploadedFiles.length > 0
+                                                    ? 'bg-blue-500/15 text-blue-400'
+                                                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                                            }`}
+                                        >
+                                            <Paperclip className="h-4 w-4" />
+                                            Attach Files
+                                            {(uploadedFiles.length > 0 || hasConversationFiles()) && (
+                                                <span className="ml-auto text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded px-1">
+                                                    {uploadedFiles.length > 0 ? uploadedFiles.length : getConversationFiles().length}
+                                                </span>
+                                            )}
+                                        </button>
+                                        {/* Research toggle */}
+                                        <button
+                                            onClick={() => {
+                                                handleSearchTypeChange(searchType === 'research' ? 'search' : 'research');
+                                                setShowPlusMenu(false);
+                                            }}
+                                            className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm transition-colors ${
+                                                searchType === 'research'
+                                                    ? 'bg-blue-500/15 text-blue-400'
+                                                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                                            }`}
+                                        >
+                                            <Atom className="h-4 w-4" />
+                                            Deep Research
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="mx-1 h-4 w-px bg-border/30" />
+
+                            {/* AI Model Selector */}
+                            <DropdownMenu>
+                                <DropdownMenuTrigger className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-gray-500/60 transition-colors cursor-pointer border-0 bg-transparent outline-none">
+                                    <Cpu className="h-4 w-4" />
+                                    <span className="hidden sm:inline">{selectedModel?.name || 'Model'}</span>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent className="dark:bg-[oklch(0.2478_0_0)] dark:border-gray-600 w-64 max-h-80 overflow-y-auto">
+                                    <DropdownMenuLabel className="dark:text-white font-medium sticky top-0 bg-white dark:bg-[oklch(0.2478_0_0)] z-10">
+                                        AI Models
+                                    </DropdownMenuLabel>
+                                    <DropdownMenuSeparator className="dark:border-gray-600 sticky top-8 bg-white dark:bg-[oklch(0.2478_0_0)] z-10" />
+                                    <div className="space-y-1">
+                                        {AIModelsOption.map((model, index) => {
+                                            const isAccessible = model.modelApi === 'auto' || isPro || !model.isPro;
+                                            const requiresUpgrade = model.isPro && !isPro;
+                                            return (
+                                                <DropdownMenuItem
+                                                    key={index}
+                                                    className={`dark:text-white dark:hover:bg-[oklch(0.3092_0_0)] ${isAccessible ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'} ${
+                                                        selectedModel.id === model.id ? 'bg-accent dark:bg-[oklch(0.3092_0_0)]' : ''
+                                                    }`}
+                                                    onClick={() => isAccessible && handleModelSelect(model.id)}
+                                                    disabled={!isAccessible}
+                                                >
+                                                    <div className='w-full'>
+                                                        <div className='flex items-center justify-between'>
+                                                            <div className='flex items-center gap-2'>
+                                                                <h2 className='text-sm dark:text-white font-medium'>{model.name}</h2>
+                                                                {requiresUpgrade && (
+                                                                    <Crown className='w-3 h-3 text-yellow-500' title='Pro plan required' />
+                                                                )}
+                                                            </div>
+                                                            {selectedModel.id === model.id && (
+                                                                <div className='w-2 h-2 bg-green-500 rounded-full'></div>
+                                                            )}
+                                                        </div>
+                                                        <p className='text-xs text-gray-500 dark:text-gray-400 mt-1'>
+                                                            {model.desc}
+                                                            {requiresUpgrade && ' (Upgrade to Pro to unlock)'}
+                                                        </p>
+                                                    </div>
+                                                </DropdownMenuItem>
+                                            );
+                                        })}
+                                    </div>
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+
+                            <div className="mx-1 h-4 w-px bg-border/30" />
+
+                            {/* Microphone Button */}
+                            <button
+                                className={`flex h-8 w-8 items-center justify-center rounded-full transition-colors ${
+                                    isListening
+                                        ? 'bg-red-100 text-red-500 dark:bg-red-900'
+                                        : 'text-muted-foreground hover:text-foreground hover:bg-gray-500/60 coursor-pointer'
+                                }`}
+                                onClick={toggleSpeechRecognition}
+                                title={isListening ? 'Stop listening' : 'Start voice input'}
+                            >
+                                {isListening
+                                    ? <MicOff className="h-4.5 w-4.5 animate-pulse" />
+                                    : <Mic className="h-4.5 w-4.5" />
+                                }
+                            </button>
+                        </div>
+
+                        {/* Send button */}
+                        <button
+                            onClick={handleSendClick}
+                            disabled={loadingSearch || !deferredUserInput?.trim()}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full transition-all duration-200 ${
+                                deferredUserInput?.trim()
+                                    ? 'bg-foreground text-background hover:opacity-80'
+                                    : 'text-muted-foreground cursor-not-allowed dark:bg-[oklch(0.2478_0_0)]'
+                            }`}
+                        >
+                            {loadingSearch ? (
+                                <div className="h-4 w-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                            ) : (
+                                <ArrowUp className="h-4 w-4" />
+                            )}
+                        </button>
+                    </div>
                 </div>
 
                 {/* File Upload Modal */}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { checkUserPlan, getSubscriptionDetails, getSubscriptionStatusMessage } from '@/lib/planUtils';
+import axios from 'axios';
 
 /**
  * Custom hook for managing subscription status across components
@@ -56,11 +56,27 @@ export const useSubscription = (userEmail) => {
     try {
       setSubscriptionData(prev => ({ ...prev, loading: true, error: null }));
 
-      const [planInfo, subDetails, statusMessage] = await Promise.all([
-        checkUserPlan(userEmail),
-        getSubscriptionDetails(userEmail),
-        getSubscriptionStatusMessage(userEmail)
-      ]);
+      const response = await axios.get('/api/user/subscription-status', {
+        params: { email: userEmail }
+      });
+
+      const payload = response?.data || {};
+      const planInfo = {
+        isPro: !!payload?.planCheck?.isPro,
+        plan: payload?.planCheck?.effectivePlan || payload?.user?.currentPlan || 'free',
+        isExpired: !!payload?.planCheck?.isExpired,
+        expiresAt: payload?.planCheck?.expiresAt || null,
+      };
+
+      const subDetails = {
+        hasSubscription: !!payload?.subscription?.hasSubscriptionDates,
+        isActive: !!payload?.subscription?.isActive,
+        startDate: payload?.subscription?.startDate || null,
+        endDate: payload?.subscription?.endDate || null,
+        daysRemaining: payload?.subscription?.daysRemaining ?? null,
+      };
+
+      const statusMessage = payload?.subscription?.statusMessage || 'Free Plan';
 
       const effectivePlan = planInfo.plan || 'free';
       const isPro = planInfo.isPro && !planInfo.isExpired;

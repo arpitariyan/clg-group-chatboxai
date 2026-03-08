@@ -175,7 +175,7 @@ const VoiceOrb = ({
         <div className="relative w-full">
             <div
                 ref={containerRef}
-                className="aspect-square w-full max-w-[420px] mx-auto rounded-3xl border border-white/10 bg-linear-to-b cursor-pointer"
+                className="aspect-square w-full max-w-105 mx-auto rounded-3xl border border-white/10 bg-linear-to-b cursor-pointer"
                 onClick={onToggle}
             />
             <div className="pointer-events-none absolute inset-0 flex items-end justify-center pb-4">
@@ -859,7 +859,7 @@ function VoiceAIPage() {
                                     <p className="text-sm uppercase tracking-[0.2em] text-white/60">Live transcript</p>
                                     <span className="text-xs text-white/50">Lang: {getLanguageCode(currentLanguage)}</span>
                                 </div>
-                                <p className="text-lg font-medium text-white/90 min-h-[72px] leading-relaxed">
+                                <p className="text-lg font-medium text-white/90 min-h-18 leading-relaxed">
                                     {userTranscript || 'Say something and we will transcribe it here.'}
                                 </p>
                             </div>
@@ -869,7 +869,7 @@ function VoiceAIPage() {
                                     <p className="text-sm uppercase tracking-[0.2em] text-white/60">AI response</p>
                                     {isProcessing && <span className="text-xs text-amber-300">Processing…</span>}
                                 </div>
-                                <p className="text-lg font-medium text-white/90 min-h-[72px] leading-relaxed">
+                                <p className="text-lg font-medium text-white/90 min-h-18 leading-relaxed">
                                     {aiResponse || 'Responses will appear here once processed.'}
                                 </p>
                             </div>

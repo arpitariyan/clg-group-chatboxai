@@ -13,7 +13,7 @@ function Header({ searchInputRecord }) {
         <div className='flex items-center justify-between'>
             <div className='flex items-center gap-2 text-gray-500'>
                 <Clock className='w-4 h-4' />
-                <h2 style={{ fontSize: '80%' }}>{moment(searchInputRecord?.created_at).fromNow()}</h2>
+                <h2 style={{ fontSize: '80%' }}>{moment(searchInputRecord?.$createdAt).fromNow()}</h2>
             </div>
 
             <h2 className='line-clamp-1 max-w-md text-sm text-gray-500'>{searchInputRecord?.searchInput}</h2>

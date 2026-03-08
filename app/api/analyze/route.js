@@ -1,28 +1,343 @@
 import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { GoogleGenAI, createPartFromUri } from '@google/genai';
-import { createClient } from '@supabase/supabase-js';
+import { GoogleGenAI } from '@google/genai';
+import { storage, BUCKET_ID, databases, DB_ID, Query, ID } from '@/services/appwrite-admin';
+import { DOCUMENT_CONTEXT_COLLECTION_ID } from '@/services/appwrite-collections';
 
-// Initialize Supabase client for server-side operations
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_KEY
-);
+const geminiApiKeys = [
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY,
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY_2,
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY_3,
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY_4,
+    // process.env.GEMINI_API_KEY,
+    // process.env.GOOGLE_GENAI_API_KEY,
+].filter((key, index, arr) => !!key && arr.indexOf(key) === index);
 
-// Initialize Gemini AI - Use the same approach as your Shared.jsx models
-const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || 
-                    process.env.NEXT_PUBLIC_GEMINI_API_KEY_2 || 
-                    process.env.GEMINI_API_KEY || 
-                    process.env.GOOGLE_GENAI_API_KEY;
-const genAI = new GoogleGenerativeAI(geminiApiKey);
-const ai = new GoogleGenAI({ apiKey: geminiApiKey });
+// Keep model list aligned with verified working models from analysisTest.js.
+const geminiModelCandidates = [
+    'gemini-2.5-flash'
+];
+
+// In-memory key health cache to avoid retrying obviously bad keys on every request.
+const geminiKeyCooldownUntil = new Map();
+
+function getKeySuffix(apiKey = '') {
+    return String(apiKey).slice(-6);
+}
+
+function isKeyInCooldown(apiKey) {
+    const until = geminiKeyCooldownUntil.get(apiKey);
+    return Number.isFinite(until) && Date.now() < until;
+}
+
+function setKeyCooldown(apiKey, error) {
+    const message = String(error?.message || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+
+    // Permanent-ish key/project issues: longer cooldown.
+    if (
+        status === 401 ||
+        message.includes('api_key_invalid') ||
+        message.includes('api key expired') ||
+        message.includes('consumer_suspended') ||
+        message.includes('service_disabled') ||
+        message.includes('api_key_service_blocked') ||
+        message.includes('permission denied')
+    ) {
+        geminiKeyCooldownUntil.set(apiKey, Date.now() + 30 * 60 * 1000);
+        return;
+    }
+
+    // Quota is often temporary: short cooldown.
+    if (status === 429 || message.includes('resource_exhausted') || message.includes('quota')) {
+        geminiKeyCooldownUntil.set(apiKey, Date.now() + 60 * 1000);
+    }
+}
+
+const MAX_DOCUMENT_CHARS = 32000;
+const CHUNK_SIZE = 1200;
+const CHUNK_OVERLAP = 250;
+const MAX_CHUNKS_PER_FILE = 40;
+const MAX_RETRIEVED_CHUNKS = 6;
+
+function normalizeForRetrieval(text = '') {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function tokenize(text = '') {
+    return normalizeForRetrieval(text)
+        .split(' ')
+        .filter((token) => token.length >= 3);
+}
+
+function computeContentHash(value = '') {
+    return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function createTextChunks(text = '', chunkSize = CHUNK_SIZE, overlap = CHUNK_OVERLAP) {
+    const source = String(text || '').trim();
+    if (!source) return [];
+
+    const chunks = [];
+    let start = 0;
+    let index = 0;
+
+    while (start < source.length && index < MAX_CHUNKS_PER_FILE) {
+        const end = Math.min(start + chunkSize, source.length);
+        const chunk = source.slice(start, end).trim();
+
+        if (chunk) {
+            chunks.push({
+                chunkIndex: index,
+                chunkText: chunk,
+                chunkKeywords: tokenize(chunk).slice(0, 60).join(' '),
+            });
+        }
+
+        if (end >= source.length) break;
+        start = Math.max(end - overlap, start + 1);
+        index += 1;
+    }
+
+    return chunks;
+}
+
+function rankChunksForPrompt(question = '', rows = []) {
+    const queryTokens = new Set(tokenize(question));
+    if (!queryTokens.size) return rows.slice(0, MAX_RETRIEVED_CHUNKS);
+
+    const scored = rows
+        .map((row) => {
+            const keywords = tokenize(row.chunkKeywords || row.chunkText || '');
+            let overlap = 0;
+            for (const token of keywords) {
+                if (queryTokens.has(token)) overlap += 1;
+            }
+
+            // Slightly prioritize early chunks because titles/abstracts are often there.
+            const positionBonus = Math.max(0, 3 - Number(row.chunkIndex || 0));
+            return {
+                row,
+                score: overlap + positionBonus,
+            };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_RETRIEVED_CHUNKS)
+        .map((entry) => entry.row);
+
+    return scored;
+}
+
+async function listDocumentContextRows({ libId, ownerEmail, filePath = null }) {
+    if (!DB_ID || !DOCUMENT_CONTEXT_COLLECTION_ID || !libId || !ownerEmail) return [];
+
+    const queries = [
+        Query.equal('libId', String(libId)),
+        Query.equal('ownerEmail', String(ownerEmail)),
+        Query.limit(200),
+    ];
+
+    if (filePath) {
+        queries.push(Query.equal('filePath', String(filePath)));
+    }
+
+    try {
+        const result = await databases.listDocuments(DB_ID, DOCUMENT_CONTEXT_COLLECTION_ID, queries);
+        return result?.documents || [];
+    } catch (error) {
+        console.warn('Document context listing failed, continuing without persisted retrieval:', error?.message || error);
+        return [];
+    }
+}
+
+async function persistDocumentChunks({
+    libId,
+    ownerEmail,
+    fileInfo,
+    analysis,
+}) {
+    if (!DB_ID || !DOCUMENT_CONTEXT_COLLECTION_ID || !libId || !ownerEmail || !fileInfo?.path) {
+        return { persisted: false, contextVersion: null, chunks: [] };
+    }
+
+    const combinedText = String(analysis?.fullContent || analysis?.summary || '').slice(0, MAX_DOCUMENT_CHARS);
+    const chunks = createTextChunks(combinedText);
+    if (!chunks.length) {
+        return { persisted: false, contextVersion: null, chunks: [] };
+    }
+
+    const contextVersion = computeContentHash(`${fileInfo.path}::${combinedText.slice(0, 4000)}`);
+
+    const existingRows = await listDocumentContextRows({
+        libId,
+        ownerEmail,
+        filePath: fileInfo.path,
+    });
+
+    const existingByIndex = new Map(
+        existingRows
+            .filter((row) => row?.contextVersion === contextVersion)
+            .map((row) => [Number(row.chunkIndex), row])
+    );
+
+    try {
+        for (const chunk of chunks) {
+            const payload = {
+                libId: String(libId),
+                ownerEmail: String(ownerEmail),
+                filePath: String(fileInfo.path),
+                fileName: String(fileInfo.fileName || 'unknown-file'),
+                fileType: String(fileInfo.fileType || 'application/octet-stream'),
+                contextVersion,
+                chunkIndex: Number(chunk.chunkIndex),
+                chunkText: String(chunk.chunkText),
+                chunkKeywords: String(chunk.chunkKeywords || ''),
+                sourceType: 'document_understanding',
+                updatedAt: new Date().toISOString(),
+            };
+
+            const existing = existingByIndex.get(Number(chunk.chunkIndex));
+            if (existing?.$id) {
+                await databases.updateDocument(DB_ID, DOCUMENT_CONTEXT_COLLECTION_ID, existing.$id, payload);
+            } else {
+                await databases.createDocument(DB_ID, DOCUMENT_CONTEXT_COLLECTION_ID, ID.unique(), {
+                    ...payload,
+                    createdAt: new Date().toISOString(),
+                });
+            }
+        }
+
+        return { persisted: true, contextVersion, chunks };
+    } catch (error) {
+        console.warn('Document context persistence failed, continuing with in-memory flow:', error?.message || error);
+        return { persisted: false, contextVersion, chunks };
+    }
+}
+
+async function retrieveDocumentContext({ libId, ownerEmail, question }) {
+    const rows = await listDocumentContextRows({ libId, ownerEmail });
+    if (!rows.length) return { chunks: [], contextVersion: null };
+
+    const best = rankChunksForPrompt(question, rows);
+    const contextVersion = best[0]?.contextVersion || rows[0]?.contextVersion || null;
+    return { chunks: best, contextVersion };
+}
+
+function isQuotaError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+        error?.status === 429 ||
+        error?.code === 429 ||
+        message.includes('resource_exhausted') ||
+        message.includes('quota') ||
+        message.includes('too many requests')
+    );
+}
+
+function isRetryableKeyError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    const details = JSON.stringify(error?.errorDetails || error?.details || '').toLowerCase();
+    const status = Number(error?.status || error?.code || 0);
+
+    return (
+        status === 401 ||
+        status === 403 ||
+        status === 400 ||
+        message.includes('service_disabled') ||
+        message.includes('api has not been used') ||
+        message.includes('permission denied') ||
+        message.includes('api key not valid') ||
+        message.includes('api key expired') ||
+        message.includes('api_key_invalid') ||
+        message.includes('consumer_suspended') ||
+        message.includes('has been suspended') ||
+        message.includes('invalid api key') ||
+        message.includes('forbidden') ||
+        details.includes('api_key_invalid') ||
+        details.includes('consumer_suspended') ||
+        details.includes('service_disabled')
+    );
+}
+
+async function generateWithGeminiFailover(contents, preferredModels = geminiModelCandidates) {
+    if (!geminiApiKeys.length) {
+        throw new Error('No Gemini API keys configured.');
+    }
+
+    const models = Array.isArray(preferredModels) && preferredModels.length > 0
+        ? preferredModels
+        : geminiModelCandidates;
+
+    let lastError;
+
+    for (const modelName of models) {
+        for (const apiKey of geminiApiKeys) {
+            const keySuffix = getKeySuffix(apiKey);
+
+            if (isKeyInCooldown(apiKey)) {
+                continue;
+            }
+
+            try {
+                const aiClient = new GoogleGenAI({ apiKey });
+                const response = await aiClient.models.generateContent({
+                    model: modelName,
+                    contents,
+                });
+
+                const text = response?.text || '';
+                if (text?.trim()) {
+                    return { text, model: modelName };
+                }
+
+                throw new Error(`Empty Gemini response for model ${modelName}`);
+            } catch (primaryError) {
+                lastError = primaryError;
+
+                try {
+                    const legacy = new GoogleGenerativeAI(apiKey);
+                    const model = legacy.getGenerativeModel({ model: modelName });
+                    const result = await model.generateContent({
+                        contents: [{ role: 'user', parts: contents }],
+                    });
+                    const fallbackText = await result?.response?.text?.();
+
+                    if (fallbackText?.trim()) {
+                        return { text: fallbackText, model: modelName };
+                    }
+                } catch (legacyError) {
+                    lastError = legacyError;
+                }
+
+                setKeyCooldown(apiKey, lastError);
+
+                if (isQuotaError(lastError) || isRetryableKeyError(lastError)) {
+                    console.warn(`Gemini key/model attempt failed, rotating key. model=${modelName}, key=*${keySuffix}`, lastError?.message || lastError);
+                    continue;
+                }
+
+                if (!isQuotaError(lastError)) {
+                    throw lastError;
+                }
+            }
+        }
+    }
+
+    throw lastError || new Error('Gemini analysis failed after failover attempts.');
+}
 
 // Store for document summaries (in-memory cache - can be moved to database for persistence)
 const documentSummaryCache = new Map();
 
 export async function POST(req) {
     try {
-        const { prompt, filePaths, libId, conversationHistory } = await req.json();
+        const { prompt, filePaths, libId, userEmail, conversationHistory } = await req.json();
+        const ownerEmail = String(userEmail || '').trim().toLowerCase();
         
         // console.log('API analyze called with:', { prompt, fileCount: filePaths?.length, libId, hasConversationHistory: !!conversationHistory });
 
@@ -38,6 +353,7 @@ export async function POST(req) {
         let documentSummaries = [];
         let hasImages = false;
         let hasDocuments = false;
+        const persistedContextVersions = [];
         
         // Process uploaded files if any
         if (filePaths && filePaths.length > 0) {
@@ -65,6 +381,16 @@ export async function POST(req) {
                         // Handle documents with advanced understanding
                         hasDocuments = true;
                         const documentAnalysis = await performDocumentUnderstanding(fileInfo);
+
+                        const persistedContext = await persistDocumentChunks({
+                            libId,
+                            ownerEmail,
+                            fileInfo,
+                            analysis: documentAnalysis,
+                        });
+                        if (persistedContext?.contextVersion) {
+                            persistedContextVersions.push(persistedContext.contextVersion);
+                        }
                         
                         extractedContent.push({
                             fileName: fileInfo.fileName,
@@ -147,6 +473,28 @@ export async function POST(req) {
             });
             documentContext += '\n';
         }
+
+        let retrievedChunks = [];
+        let retrievedContextVersion = null;
+        if (hasDocuments && libId && ownerEmail && prompt?.trim()) {
+            const retrieval = await retrieveDocumentContext({
+                libId,
+                ownerEmail,
+                question: prompt,
+            });
+            retrievedChunks = retrieval?.chunks || [];
+            retrievedContextVersion = retrieval?.contextVersion || null;
+        }
+
+        if (retrievedChunks.length > 0) {
+            documentContext += '\n\n**Retrieved Document Context (most relevant to current question):**\n';
+            retrievedChunks.forEach((chunk, index) => {
+                documentContext += `\n[Source ${index + 1}] ${chunk.fileName}#${chunk.chunkIndex}\n`;
+                documentContext += `${String(chunk.chunkText || '').slice(0, 1800)}\n`;
+                documentContext += '---\n';
+            });
+            documentContext += '\nUse these retrieved sections as the primary evidence for the answer.\n';
+        }
         
         if (hasImages && prompt) {
           // Advanced image analysis with user question and conversation context
@@ -185,10 +533,11 @@ Provide a thorough, descriptive analysis of everything you observe.`;
 ${conversationContext}${documentContext}**Current User Question:** "${prompt || 'Please provide a comprehensive analysis of the document(s)'}"
 
 **Instructions:**
-1. **Use the document summaries** as context to understand the overall content
+1. **Use the document summaries and retrieved sections** as context to understand the overall content
 2. **Reference specific details** from the full document content when answering
 3. **Consider the conversation history** to provide contextually relevant answers
 4. **Cite information accurately** from the documents
+5. **Whenever possible, cite source labels** in this format: [fileName#chunkIndex]
 5. **If the answer isn't in the documents**, clearly state that and provide the best possible guidance
 6. **Anticipate follow-up questions** based on the document content and conversation flow
 
@@ -220,96 +569,35 @@ Format your response to be clear, well-organized, and directly useful for contin
         let aiResponse;
         let actualModelUsed = modelToUse;
 
-        try {
-            // console.log('Sending request to Gemini AI with document understanding...');
-            
-            // Use the new @google/genai SDK for advanced document understanding
-            const contents = [{ text: analysisPrompt }];
+        // console.log('Sending request to Gemini AI with document understanding...');
+        const contents = [{ text: analysisPrompt }];
 
-            // Process files and add their content
-            for (const fileData of extractedContent) {
-                if (fileData.isImage && fileData.imageData) {
-                    // Add image for vision analysis (inline data approach)
-                    contents.push({
-                        inlineData: {
-                            mimeType: fileData.imageData.mimeType,
-                            data: fileData.imageData.data
-                        }
-                    });
-                    
-                    // Add context about the image
-                    if (extractedContent.length > 1) {
-                        contents.push({ 
-                            text: `[Image: ${fileData.fileName}]` 
-                        });
+        // Process files and add their content
+        for (const fileData of extractedContent) {
+            if (fileData.isImage && fileData.imageData) {
+                contents.push({
+                    inlineData: {
+                        mimeType: fileData.imageData.mimeType,
+                        data: fileData.imageData.data
                     }
-                } else if (fileData.isDocument && fileData.summary) {
-                    // For documents, include both summary and relevant content
-                    const documentPrompt = `**${fileData.fileName}**\n\n**Summary:** ${fileData.summary}\n\n**Full Content:**\n${fileData.content}`;
-                    contents.push({
-                        text: documentPrompt
-                    });
-                } else {
-                    // Add regular text content
-                    const contentText = `**File: ${fileData.fileName}** (${fileData.fileType})\n\n${fileData.content}`;
-                    contents.push({
-                        text: contentText
-                    });
-                }
-            }
-
-            // Generate AI response using the new SDK
-            const response = await ai.models.generateContent({
-                model: modelToUse,
-                contents: contents
-            });
-
-            aiResponse = response.text;
-            
-            // console.log('Received response from Gemini AI with document understanding');
-
-        } catch (error) {
-            console.error('Document understanding error:', error);
-            
-            // Fallback to traditional approach
-            // console.log('Falling back to traditional analysis approach...');
-            
-            try {
-                const model = genAI.getGenerativeModel({ model: modelToUse });
-                const contentParts = [{ text: analysisPrompt }];
-                
-                // Add simplified content
-                for (const fileData of extractedContent) {
-                    if (fileData.isImage && fileData.imageData) {
-                        contentParts.push({
-                            inlineData: {
-                                mimeType: fileData.imageData.mimeType,
-                                data: fileData.imageData.data
-                            }
-                        });
-                    } else {
-                        const preview = fileData.content.substring(0, 5000);
-                        contentParts.push({
-                            text: `${fileData.fileName}:\n${preview}${fileData.content.length > 5000 ? '...[truncated]' : ''}`
-                        });
-                    }
-                }
-                
-                const result = await model.generateContent({
-                    contents: [{
-                        role: "user",
-                        parts: contentParts
-                    }]
                 });
 
-                const response = await result.response;
-                aiResponse = response.text();
-                
-            } catch (fallbackError) {
-                console.error('Fallback also failed:', fallbackError);
-                throw error; // Throw original error
+                if (extractedContent.length > 1) {
+                    contents.push({ text: `[Image: ${fileData.fileName}]` });
+                }
+            } else if (fileData.isDocument && fileData.summary) {
+                const fullContentPreview = String(fileData.content || '').slice(0, 8000);
+                const documentPrompt = `**${fileData.fileName}**\n\n**Summary:** ${fileData.summary}\n\n**Extracted Content Preview:**\n${fullContentPreview}`;
+                contents.push({ text: documentPrompt });
+            } else {
+                const contentText = `**File: ${fileData.fileName}** (${fileData.fileType})\n\n${fileData.content}`;
+                contents.push({ text: contentText });
             }
         }
+
+        const generated = await generateWithGeminiFailover(contents, [modelToUse, ...geminiModelCandidates.filter((m) => m !== modelToUse)]);
+        aiResponse = generated.text;
+        actualModelUsed = generated.model || modelToUse;
 
         // Format results in searchResult structure (enhanced for better analysis)
         const searchResult = extractedContent.map((fileData, index) => ({
@@ -354,6 +642,9 @@ Format your response to be clear, well-organized, and directly useful for contin
             searchResult: searchResult,
             aiResponse: aiResponse,
             documentSummaries: documentSummaries, // Include summaries for follow-up questions
+            documentContextVersion: retrievedContextVersion || persistedContextVersions[0] || null,
+            retrievedChunkCount: retrievedChunks.length,
+            fileContextUsed: retrievedChunks.length > 0,
             analyzedFiles: extractedContent.length,
             processedFiles: extractedContent.map(f => ({
                 fileName: f.fileName,
@@ -372,6 +663,7 @@ Format your response to be clear, well-organized, and directly useful for contin
                 advancedImageAnalysis: hasImages,
                 documentUnderstanding: hasDocuments,
                 documentSummaries: documentSummaries.length > 0,
+                retrievedContextChunks: retrievedChunks.length,
                 contextAwareQA: documentSummaries.length > 0 || conversationHistory?.length > 0,
                 combinedAnalysis: hasImages && extractedContent.some(f => !f.isImage),
                 userPromptIntegration: !!prompt
@@ -385,9 +677,9 @@ Format your response to be clear, well-organized, and directly useful for contin
         let errorMessage = error.message;
         if (error.message?.includes('models/gemini') && error.message?.includes('not found')) {
             errorMessage = 'Gemini model not available. Please check your API configuration.';
-        } else if (error.message?.includes('API key')) {
-            errorMessage = 'Invalid Gemini API key. Please check your environment variables.';
-        } else if (error.message?.includes('quota')) {
+        } else if (error.message?.includes('API key') || isRetryableKeyError(error)) {
+            errorMessage = 'Gemini API key/project access issue (disabled API, invalid key, or forbidden). Please verify keys and enable Generative Language API for the key project.';
+        } else if (error.message?.includes('quota') || isQuotaError(error)) {
             errorMessage = 'Gemini API quota exceeded. Please try again later.';
         }
         
@@ -408,22 +700,10 @@ async function extractImageForVision(fileInfo) {
     try {
         // console.log(`Extracting image for vision: ${fileInfo.fileName} at path: ${fileInfo.path}`);
         
-        // Download file from Supabase Storage
-        const { data: fileData, error } = await supabase.storage
-            .from('mainStorage')
-            .download(fileInfo.path);
-
-        if (error) {
-            console.error('Supabase storage download error:', error);
-            throw new Error(`Failed to download file: ${error.message}`);
-        }
-
-        if (!fileData) {
-            throw new Error('No file data received from storage');
-        }
-
-        const buffer = await fileData.arrayBuffer();
-        const base64Data = Buffer.from(buffer).toString('base64');
+        // Download file from Appwrite Storage
+        const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
+        const buffer = Buffer.from(fileData);
+        const base64Data = buffer.toString('base64');
 
         // console.log(`Image converted to base64, size: ${buffer.byteLength} bytes`);
 
@@ -452,22 +732,10 @@ async function performDocumentUnderstanding(fileInfo) {
             return documentSummaryCache.get(cacheKey);
         }
         
-        // Download file from Supabase Storage
-        console.log(`Downloading from Supabase storage: ${fileInfo.path}`);
-        const { data: fileData, error } = await supabase.storage
-            .from('mainStorage')
-            .download(fileInfo.path);
-
-        if (error) {
-            console.error('Supabase download error:', error);
-            throw new Error(`Failed to download file: ${error.message}`);
-        }
-
-        if (!fileData) {
-            throw new Error('No file data received from Supabase storage');
-        }
-
-        const buffer = await fileData.arrayBuffer();
+        // Download file from Appwrite Storage
+        console.log(`Downloading from Appwrite storage: ${fileInfo.path}`);
+        const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
+        const buffer = Buffer.from(fileData);
         console.log(`File downloaded successfully. Size: ${buffer.byteLength} bytes`);
         
         // SKIP text extraction - use Gemini's native document understanding
@@ -488,12 +756,8 @@ async function performDocumentUnderstanding(fileInfo) {
         ];
 
         console.log('Sending document to Gemini for native analysis...');
-        const response = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
-            contents: contents
-        });
-
-        const analysisText = response.text;
+        const generated = await generateWithGeminiFailover(contents, ['gemini-2.5-flash', 'gemini-2.0-flash']);
+        const analysisText = generated.text;
         console.log('Received comprehensive analysis from Gemini');
         
         // Parse the response to extract structured information
@@ -522,12 +786,8 @@ async function performDocumentUnderstanding(fileInfo) {
         // Fallback: Try simpler Gemini request
         try {
             console.log('Trying fallback with simpler prompt...');
-            const { data: fileData } = await supabase.storage
-                .from('mainStorage')
-                .download(fileInfo.path);
-            
-            const arrayBuffer = await fileData.arrayBuffer();
-            const base64Data = Buffer.from(arrayBuffer).toString('base64');
+            const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
+            const base64Data = Buffer.from(fileData).toString('base64');
             
             const simpleContents = [
                 { text: "Please extract and summarize the main content from this document. Provide key information and main points." },
@@ -539,12 +799,8 @@ async function performDocumentUnderstanding(fileInfo) {
                 }
             ];
             
-            const response = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
-                contents: simpleContents
-            });
-            
-            const content = response.text;
+            const generated = await generateWithGeminiFailover(simpleContents, ['gemini-2.5-flash', 'gemini-2.0-flash']);
+            const content = generated.text;
             console.log('Fallback extraction successful');
             
             return {
@@ -577,21 +833,9 @@ async function extractFileContent(fileInfo) {
     try {
         // console.log(`Extracting content from ${fileInfo.fileName} at path: ${fileInfo.path}`);
         
-        // Download file from Supabase Storage
-        const { data: fileData, error } = await supabase.storage
-            .from('mainStorage')
-            .download(fileInfo.path);
-
-        if (error) {
-            console.error('Supabase storage download error:', error);
-            throw new Error(`Failed to download file: ${error.message}`);
-        }
-
-        if (!fileData) {
-            throw new Error('No file data received from storage');
-        }
-
-        const buffer = await fileData.arrayBuffer();
+        // Download file from Appwrite Storage
+        const fileData = await storage.getFileDownload(BUCKET_ID, fileInfo.path);
+        const buffer = Buffer.from(fileData);
         
         // Extract content based on file type
         if (fileInfo.fileType === 'application/pdf') {

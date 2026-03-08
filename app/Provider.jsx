@@ -1,126 +1,55 @@
 "use client";
 
-import { supabase } from "@/services/supabase";
-import { useAuth } from "@/contexts/AuthContext";
-import React, { useEffect, useState } from "react";
-import { UserDetailContext } from "@/contexts/UserDetailContext";
+import React, { useEffect } from "react";
 import { UserProvider } from "@/contexts/UserContext";
+import { useUser } from "@/contexts/UserContext";
 import { ModelProvider } from "@/contexts/ModelContext";
 import { AdminProvider } from "@/contexts/AdminContext";
 import AdminLoginModal from "@/app/_components/modals/AdminLoginModal";
-import { ToastContainer } from "react-toastify";
-import "react-toastify/dist/ReactToastify.css";
+import AppAlerts from "@/app/_components/AppAlerts";
+import {
+  GENERAL_PREFS_KEY,
+  applyAccentToDocument,
+  applyGeneralPreferencesToDocument,
+  loadGeneralPreferences,
+} from "@/lib/user-preferences";
 
-function Provider({ children }) {
-  const { currentUser } = useAuth();
-  const [userDetail, setUserDetail] = useState();
+function UserPreferenceSync() {
+  const { userData } = useUser() || {};
 
   useEffect(() => {
-    currentUser && CreateNewUser();
-  }, [currentUser]);
+    applyGeneralPreferencesToDocument(loadGeneralPreferences());
 
-  // Extract and format user's name from email (same logic as sidebar)
-  const getUserNameFromEmail = (user) => {
-    if (user?.displayName) {
-      const name = user.displayName;
-      return name.length > 5 ? name.substring(0, 5) + "…" : name;
-    }
+    const handleStorage = (event) => {
+      if (event.key !== GENERAL_PREFS_KEY) return;
+      applyGeneralPreferencesToDocument(loadGeneralPreferences());
+    };
 
-    if (user?.email) {
-      // Extract name from email (part before @)
-      const emailName = user.email.split("@")[0];
-      // Remove numbers, dots, underscores, and hyphens, then capitalize
-      const cleanName = emailName.replace(/[0-9._-]/g, "");
-      const formattedName =
-        cleanName.charAt(0).toUpperCase() + cleanName.slice(1).toLowerCase();
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
-      // Truncate if longer than 5 characters
-      return formattedName.length > 5
-        ? formattedName.substring(0, 5) + "…"
-        : formattedName;
-    }
+  useEffect(() => {
+    applyAccentToDocument(userData?.accent_color || "violet");
+  }, [userData?.accent_color]);
 
-    return "User";
-  };
+  return null;
+}
 
-  const CreateNewUser = async () => {
-    // login already exists
-    if (!currentUser?.email) return;
-
-    // Owner account — skip all Supabase queries entirely, set hardcoded profile
-    if (currentUser.email === 'arpitariyanm@gmail.com') {
-      setUserDetail({
-        email: 'arpitariyanm@gmail.com',
-        name: getUserNameFromEmail(currentUser) || 'Arpit',
-        plan: 'pro',
-        credits: 25000,
-      });
-      return;
-    }
-
-    let { data: Users, error } = await supabase
-      .from("Users")
-      .select("*")
-      .eq("email", currentUser.email);
-
-    // If there's a Supabase error (e.g. network timeout, paused project), bail out gracefully
-    if (error) {
-      console.error(
-        "Error fetching user from Supabase:",
-        error?.message || error,
-      );
-      return;
-    }
-
-    // Guard against null data (should not happen without error, but be safe)
-    if (!Users) return;
-
-    if (Users.length == 0) {
-      const { data, error } = await supabase
-        .from("Users")
-        .insert([
-          {
-            name: getUserNameFromEmail(currentUser),
-            email: currentUser.email,
-          },
-        ])
-        .select();
-
-      // console.log(data)
-
-      setUserDetail(data[0]);
-      return;
-    }
-
-    setUserDetail(Users[0]);
-  };
-
-
+function Provider({ children }) {
   return (
-    <UserDetailContext.Provider value={{ userDetail, setUserDetail }}>
-      <UserProvider>
-        <ModelProvider>
-          <AdminProvider>
-            <div>
-              {children}
-              <AdminLoginModal />
-              <ToastContainer
-                position="top-right"
-                autoClose={3000}
-                hideProgressBar={false}
-                newestOnTop={false}
-                closeOnClick
-                rtl={false}
-                pauseOnFocusLoss
-                draggable
-                pauseOnHover
-                theme="dark"
-              />
-            </div>
-          </AdminProvider>
-        </ModelProvider>
-      </UserProvider>
-    </UserDetailContext.Provider>
+    <UserProvider>
+      <UserPreferenceSync />
+      <ModelProvider>
+        <AdminProvider>
+          <div>
+            {children}
+            <AdminLoginModal />
+            <AppAlerts />
+          </div>
+        </AdminProvider>
+      </ModelProvider>
+    </UserProvider>
   );
 }
 

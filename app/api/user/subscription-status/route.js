@@ -1,18 +1,7 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { checkUserPlan, getSubscriptionDetails, getSubscriptionStatusMessage } from '@/lib/planUtils';
-
-// Create Supabase client with service role for database operations
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  }
-);
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { checkUserPlan, getSubscriptionDetails, getSubscriptionStatusMessage } from '@/lib/planUtils-server';
 
 export async function GET(request) {
   try {
@@ -39,15 +28,15 @@ export async function GET(request) {
     ]);
 
     // Get user data from database
-    const { data: user, error: userError } = await supabase
-      .from('Users')
-      .select('email, name, plan, credits, subscription_start_date, subscription_end_date, last_monthly_reset')
-      .eq('email', email)
-      .single();
+    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', email),
+      Query.limit(1)
+    ]);
+    const user = userRes.documents[0];
 
-    if (userError) {
+    if (!user) {
       return NextResponse.json(
-        { error: `User not found: ${userError.message}` },
+        { error: `User not found` },
         { status: 404 }
       );
     }
@@ -104,59 +93,56 @@ export async function GET(request) {
 async function getSystemOverview() {
   try {
     // Get subscription system overview
-    const [totalUsers, proUsers, expiredUsers, recentDowngrades] = await Promise.all([
-      // Total users
-      supabase.from('Users').select('*', { count: 'exact', head: true }),
-      
-      // Current pro users
-      supabase.from('Users').select('*', { count: 'exact', head: true }).eq('plan', 'pro'),
-      
-      // Users with expired subscriptions but still showing as pro
-      supabase.from('Users').select('*', { count: 'exact', head: true })
-        .eq('plan', 'pro')
-        .not('subscription_end_date', 'is', null)
-        .lte('subscription_end_date', new Date().toISOString()),
-      
-      // Recent downgrades (last 7 days)
-      supabase.from('usage_logs').select('*', { count: 'exact', head: true })
-        .eq('operation_type', 'auto_downgrade')
-        .gte('created_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    const [totalUsersRes, proUsersRes, expiredUsersRes, recentDowngradesRes] = await Promise.all([
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [Query.limit(1)]),
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [Query.equal('plan', 'pro'), Query.limit(1)]),
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.equal('plan', 'pro'),
+        Query.lessThanEqual('subscription_end_date', new Date().toISOString()),
+        Query.limit(1)
+      ]),
+      databases.listDocuments(DB_ID, USAGE_LOGS_COLLECTION_ID, [
+        Query.equal('operation_type', 'auto_downgrade'),
+        Query.greaterThanEqual('$createdAt', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
+        Query.limit(1)
+      ])
     ]);
 
     // Get some recent pro users for detail
-    const { data: recentProUsers } = await supabase
-      .from('Users')
-      .select('email, plan, subscription_start_date, subscription_end_date')
-      .eq('plan', 'pro')
-      .not('subscription_end_date', 'is', null)
-      .order('subscription_start_date', { ascending: false })
-      .limit(5);
+    const recentProRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('plan', 'pro'),
+      Query.orderDesc('subscription_start_date'),
+      Query.limit(5)
+    ]);
+    const recentProUsers = recentProRes.documents;
 
-    // Calculate some stats
-    const usersWithSubscriptionDates = await supabase
-      .from('Users')
-      .select('*', { count: 'exact', head: true })
-      .not('subscription_start_date', 'is', null)
-      .not('subscription_end_date', 'is', null);
+    // Users with subscription dates
+    const usersWithDatesRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.isNotNull('subscription_start_date'),
+      Query.isNotNull('subscription_end_date'),
+      Query.limit(1)
+    ]);
+
+    const expiredCount = expiredUsersRes.total;
 
     return NextResponse.json({
       system: {
-        totalUsers: totalUsers.count || 0,
-        proUsers: proUsers.count || 0,
-        expiredUsers: expiredUsers.count || 0,
-        usersWithSubscriptionDates: usersWithSubscriptionDates.count || 0
+        totalUsers: totalUsersRes.total,
+        proUsers: proUsersRes.total,
+        expiredUsers: expiredCount,
+        usersWithSubscriptionDates: usersWithDatesRes.total
       },
       recent: {
-        recentDowngrades: recentDowngrades.count || 0,
-        recentProUsers: recentProUsers || []
+        recentDowngrades: recentDowngradesRes.total,
+        recentProUsers
       },
       health: {
         subscriptionSystemActive: true,
         lastChecked: new Date().toISOString(),
         nextScheduledCheck: 'Daily at midnight UTC'
       },
-      alerts: expiredUsers.count > 0 ? 
-        [`⚠️ ${expiredUsers.count} users have expired subscriptions that need to be downgraded`] : 
+      alerts: expiredCount > 0 ?
+        [`⚠️ ${expiredCount} users have expired subscriptions that need to be downgraded`] :
         ['✅ No expired subscriptions found']
     });
 

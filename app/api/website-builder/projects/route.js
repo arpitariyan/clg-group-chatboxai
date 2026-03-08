@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { WEBSITE_PROJECTS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { normalizeDoc } from '@/lib/website-builder-server-utils';
 
 export async function GET(request) {
     try {
@@ -15,33 +17,23 @@ export async function GET(request) {
             );
         }
 
-        const from = (page - 1) * limit;
-        const to = from + limit - 1;
+        const offset = (page - 1) * limit;
 
-        // Get user's projects
-        const { data: projects, error: projectsError, count } = await supabase
-            .from('website_projects')
-            .select('*', { count: 'exact' })
-            .eq('user_email', userEmail)
-            .order('updated_at', { ascending: false })
-            .range(from, to);
-
-        if (projectsError) {
-            console.error('Error fetching projects:', projectsError);
-            return NextResponse.json(
-                { error: 'Failed to fetch projects', details: projectsError.message },
-                { status: 500 }
-            );
-        }
+        const res = await databases.listDocuments(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, [
+            Query.equal('user_email', userEmail),
+            Query.orderDesc('$updatedAt'),
+            Query.limit(limit),
+            Query.offset(offset)
+        ]);
 
         return NextResponse.json({
             success: true,
-            projects: projects || [],
+            projects: (res.documents || []).map(normalizeDoc),
             pagination: {
                 page,
                 limit,
-                total: count || 0,
-                totalPages: Math.ceil((count || 0) / limit)
+                total: res.total || 0,
+                totalPages: Math.ceil((res.total || 0) / limit)
             }
         });
 

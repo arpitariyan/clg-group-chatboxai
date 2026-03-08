@@ -9,13 +9,14 @@ import {
   BarChart3, 
   History, 
   FolderOpen,
+  Database,
   LogOut,
   Shield
 } from 'lucide-react';
 import AdminGuard from '@/app/_components/AdminGuard';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { toast } from 'react-toastify';
+import { toast } from '@/lib/alert';
 
 const adminNavItems = [
   { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
@@ -24,6 +25,7 @@ const adminNavItems = [
   { name: 'Analysis', path: '/admin/analysis', icon: BarChart3 },
   { name: 'History', path: '/admin/history', icon: History },
   { name: 'Files', path: '/admin/files', icon: FolderOpen },
+  { name: 'Appwrite Test', path: '/admin/appwrite-test', icon: Database },
 ];
 
 export default function AdminLayout({ children }) {

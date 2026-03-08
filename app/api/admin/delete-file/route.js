@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, storage, DB_ID, BUCKET_ID, Query } from '@/services/appwrite-admin';
+import { LIBRARY_COLLECTION_ID } from '@/services/appwrite-collections';
 
 export async function DELETE(request) {
   try {
@@ -13,26 +14,36 @@ export async function DELETE(request) {
     }
 
     // Parse file ID to get library ID and file index
-    const [libraryId, fileIndex] = fileId.split('_');
+    const underscoreIndex = fileId.lastIndexOf('_');
+    const libraryId = fileId.substring(0, underscoreIndex);
+    const fileIndex = parseInt(fileId.substring(underscoreIndex + 1));
 
-    // Get the library
-    const { data: library, error: fetchError } = await supabase
-      .from('Library')
-      .select('uploadedFiles')
-      .eq('libId', libraryId)
-      .single();
+    // Get the library document by libId field
+    const res = await databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
+      Query.equal('libId', libraryId),
+      Query.limit(1),
+    ]);
 
-    if (fetchError) throw fetchError;
-
-    if (!library || !library.uploadedFiles) {
+    if (res.documents.length === 0 || !res.documents[0].uploadedFiles) {
       return NextResponse.json(
         { error: 'File not found' },
         { status: 404 }
       );
     }
 
-    const files = library.uploadedFiles;
-    const fileToDelete = files[parseInt(fileIndex)];
+    const libraryDoc = res.documents[0];
+    let files = libraryDoc.uploadedFiles;
+    if (typeof files === 'string') {
+      try {
+        files = JSON.parse(files);
+      } catch {
+        files = [];
+      }
+    }
+    if (!Array.isArray(files)) {
+      files = [];
+    }
+    const fileToDelete = files[fileIndex];
 
     if (!fileToDelete) {
       return NextResponse.json(
@@ -41,29 +52,27 @@ export async function DELETE(request) {
       );
     }
 
-    // Delete from storage
-    const filePath = fileToDelete.path || fileToDelete.filePath;
-    if (filePath) {
-      const { error: storageError } = await supabase.storage
-        .from('mainStorage')
-        .remove([filePath]);
-
-      if (storageError) {
+    // Delete from Appwrite Storage using file ID
+    const storageFileId = fileToDelete.fileId || fileToDelete.path || fileToDelete.filePath;
+    if (storageFileId) {
+      try {
+        await storage.deleteFile(BUCKET_ID, storageFileId);
+      } catch (storageError) {
         console.error('Error deleting from storage:', storageError);
         // Continue even if storage deletion fails
       }
     }
 
     // Remove file from the uploadedFiles array
-    const updatedFiles = files.filter((_, index) => index !== parseInt(fileIndex));
+    const updatedFiles = files.filter((_, index) => index !== fileIndex);
 
-    // Update the library
-    const { error: updateError } = await supabase
-      .from('Library')
-      .update({ uploadedFiles: updatedFiles.length > 0 ? updatedFiles : null })
-      .eq('libId', libraryId);
-
-    if (updateError) throw updateError;
+    // Update the library document
+    await databases.updateDocument(
+      DB_ID,
+      LIBRARY_COLLECTION_ID,
+      libraryDoc.$id,
+      { uploadedFiles: updatedFiles.length > 0 ? JSON.stringify(updatedFiles) : null }
+    );
 
     return NextResponse.json({
       success: true,

@@ -1,6 +1,6 @@
 "use client"
 
-import { supabase } from '@/services/supabase';
+import axios from 'axios';
 import { useParams } from 'next/navigation'
 import React, { useEffect, useState, createContext, useContext } from 'react'
 import DisplayResult from './_components/DisplayResult';
@@ -15,34 +15,42 @@ function SearchQueryResult() {
     const [searchInputRecord, setSearchInputRecord] = useState();
 
     useEffect(() => {
+        const parseJsonField = (value, fallback = []) => {
+            if (Array.isArray(value) || (value && typeof value === 'object')) return value;
+            if (typeof value !== 'string') return fallback;
+            try {
+                return JSON.parse(value);
+            } catch {
+                return fallback;
+            }
+        };
+
+        const toBooleanValue = (value) => value === true || value === 'true' || value === 'liked';
+
+        const normalizeChatDocument = (chat) => ({
+            ...chat,
+            id: chat.$id || chat.id,
+            searchResult: parseJsonField(chat.searchResult, []),
+            processedFiles: parseJsonField(chat.processedFiles, []),
+            liked: toBooleanValue(chat.liked),
+            disliked: toBooleanValue(chat.disliked),
+        });
+
         const GetSearchQueryRecord = async () => {
             try {
-                let { data: Library, error } = await supabase
-                    .from('Library')
-                    .select(`
-                        *,
-                        Chats(*)
-                    `)
-                    .eq('libId', libId)
+                const response = await axios.get(`/api/search/history?libId=${encodeURIComponent(libId)}`);
+                let record = response?.data?.record || null;
 
-                if (error) {
-                    console.warn('Error fetching Library from DB, trying localStorage:', error?.message);
+                if (record && typeof record.uploadedFiles === 'string') {
+                    try {
+                        record.uploadedFiles = JSON.parse(record.uploadedFiles);
+                    } catch {
+                        record.uploadedFiles = [];
+                    }
                 }
 
-                let record = Library?.[0];
-
-                // Fallback: if the DB record is missing (Supabase down/timed out),
-                // read the data that ChatBoxAiInput saved in localStorage
-                if (!record) {
-                    try {
-                        const local = localStorage.getItem(`search_${libId}`);
-                        if (local) {
-                            record = { ...JSON.parse(local), Chats: [] };
-                            console.info('[SearchPage] Using localStorage fallback for libId:', libId);
-                        }
-                    } catch (lsErr) {
-                        console.warn('localStorage fallback parse error:', lsErr);
-                    }
+                if (record) {
+                    record.Chats = (record.Chats || []).map(normalizeChatDocument);
                 }
 
                 if (!record) return;

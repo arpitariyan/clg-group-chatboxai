@@ -175,12 +175,12 @@ function VideoList({ searchResult }) {
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Video Section */}
-                        <div className="flex-1 flex items-center justify-center min-h-[250px] md:min-h-[400px] bg-black">
+                        <div className="flex-1 flex items-center justify-center min-h-62.5 md:min-h-100 bg-black">
                             {selectedVideo.embedUrl ? (
                                 <iframe
                                     src={selectedVideo.embedUrl}
                                     title={selectedVideo.title}
-                                    className="w-full h-64 md:h-96 lg:h-[500px]"
+                                    className="w-full h-64 md:h-96 lg:h-125"
                                     frameBorder="0"
                                     allowFullScreen
                                     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"

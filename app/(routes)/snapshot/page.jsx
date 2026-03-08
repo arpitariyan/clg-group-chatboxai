@@ -1,20 +1,13 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { toast } from 'react-toastify'
-import { Loader2Icon, SearchIcon, CalendarIcon, XIcon } from 'lucide-react'
+import { Loader2Icon, SearchIcon } from 'lucide-react'
 import Link from 'next/link'
-import Image from 'next/image'
-import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
-import { Input } from '@/components/ui/input'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 
 export default function SnapshotPage() {
+    const SNAPSHOT_SCALE = 0.2
+    const SNAPSHOT_DIMENSION_PERCENT = `${100 / SNAPSHOT_SCALE}%`
+
     const [projects, setProjects] = useState([])
     const [loading, setLoading] = useState(true)
     const [search, setSearch] = useState('')
@@ -227,7 +220,11 @@ export default function SnapshotPage() {
                 ) : (
                     <>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {projects.map((project) => (
+                            {projects.map((project) => {
+                                const previewHtml = project.current_code || project.html_content || ''
+                                const createdAt = project.created_at || project.$createdAt || null
+
+                                return (
                                 <Link
                                     key={project.id}
                                     href={`/website-builder/preview/${project.id}`}
@@ -235,15 +232,15 @@ export default function SnapshotPage() {
                                 >
                                     {/* Preview Thumbnail */}
                                     <div className="relative h-48 bg-gray-100 dark:bg-gray-800 overflow-hidden">
-                                        {project.current_code ? (
+                                        {previewHtml ? (
                                             <iframe
-                                                srcDoc={project.current_code}
+                                                srcDoc={previewHtml}
                                                 title={`Preview of ${project.project_name}`}
                                                 className="w-full border-none pointer-events-none"
                                                 style={{
-                                                    width: '1920px',
-                                                    height: '1080px',
-                                                    transform: 'scale(0.24)',
+                                                    width: SNAPSHOT_DIMENSION_PERCENT,
+                                                    height: SNAPSHOT_DIMENSION_PERCENT,
+                                                    transform: `scale(${SNAPSHOT_SCALE})`,
                                                     transformOrigin: 'top left',
                                                     border: 'none',
                                                 }}
@@ -268,11 +265,12 @@ export default function SnapshotPage() {
                                             by {project.user_email?.split('@')?.[0] || 'Anonymous'}
                                         </p>
                                         <p className="text-xs text-muted-foreground dark:text-gray-500">
-                                            {new Date(project.created_at).toLocaleDateString()}
+                                            {createdAt ? new Date(createdAt).toLocaleDateString() : 'Unknown date'}
                                         </p>
                                     </div>
                                 </Link>
-                            ))}
+                                )
+                            })}
                         </div>
 
                         {/* Pagination */}

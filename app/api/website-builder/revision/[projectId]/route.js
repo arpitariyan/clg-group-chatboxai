@@ -1,13 +1,25 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
 import { generateRevision, enhancePrompt } from '@/lib/ai-client';
 import { formatConversation } from '@/lib/website-builder-utils';
+import {
+    createWebsiteConversationMessage,
+    createWebsiteVersionDocument,
+    deductWebsiteCreditsWithLock,
+    ensureProjectOwnership,
+    normalizeWebsiteProject,
+    refundWebsiteCreditsWithLock,
+    updateWebsiteProjectCode
+} from '@/lib/website-builder-server-utils';
+import {
+    WEBSITE_PROJECTS_COLLECTION_ID,
+    WEBSITE_CONVERSATIONS_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function POST(request, { params }) {
     try {
-        // Next.js 15: params is a Promise
         const { projectId } = await params;
-        const { message } = await request.json();
+        const { message, userEmail } = await request.json();
 
         if (!message || !message.trim()) {
             return NextResponse.json(
@@ -16,41 +28,44 @@ export async function POST(request, { params }) {
             );
         }
 
-        // Step 1: Get current project
-        const { data: project, error: projectError } = await supabase
-            .from('website_projects')
-            .select('*')
-            .eq('id', projectId)
-            .single();
-
-        if (projectError || !project) {
+        if (!userEmail) {
             return NextResponse.json(
-                { error: 'Project not found', details: projectError?.message },
+                { error: 'User email is required' },
+                { status: 401 }
+            );
+        }
+
+        // Step 1: Get current project
+        let project;
+        try {
+            project = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId);
+        } catch (projectError) {
+            return NextResponse.json(
+                { error: 'Project not found', details: projectError.message },
                 { status: 404 }
             );
         }
 
-        if (!project.current_code) {
+        const normalizedProject = normalizeWebsiteProject(project);
+
+        if (!normalizedProject.current_code) {
             return NextResponse.json(
                 { error: 'No current code to revise. Please wait for initial generation.' },
                 { status: 400 }
             );
         }
 
+        if (!ensureProjectOwnership(project, userEmail)) {
+            return NextResponse.json(
+                { error: 'You are not allowed to revise this project' },
+                { status: 403 }
+            );
+        }
+
         // Check and deduct credits before generating revision
         try {
-            const { data: deductResult, error: deductError } = await supabase
-                .rpc('deduct_website_credits', {
-                    p_user_email: project.user_email,
-                    p_amount: 1,
-                    p_description: 'Website revision request'
-                });
+            const result = await deductWebsiteCreditsWithLock(project.user_email, 1);
 
-            if (deductError) {
-                throw new Error(deductError.message);
-            }
-
-            const result = deductResult[0];
             if (!result.success) {
                 return NextResponse.json(
                     {
@@ -62,7 +77,7 @@ export async function POST(request, { params }) {
                             total: result.total_credits
                         }
                     },
-                    { status: 402 } // Payment Required status code
+                    { status: 402 }
                 );
             }
         } catch (creditError) {
@@ -74,109 +89,66 @@ export async function POST(request, { params }) {
         }
 
         // Step 2: Get conversation history
-        const { data: conversations, error: convError } = await supabase
-            .from('website_conversations')
-            .select('*')
-            .eq('project_id', projectId)
-            .order('created_at', { ascending: true });
-
-        if (convError) {
-            console.error('Error fetching conversations:', convError);
-        }
-
-        const formattedHistory = formatConversation(conversations || []);
+        const convRes = await databases.listDocuments(DB_ID, WEBSITE_CONVERSATIONS_COLLECTION_ID, [
+            Query.equal('project_id', projectId),
+            Query.orderAsc('$createdAt'),
+            Query.limit(100)
+        ]);
+        const formattedHistory = formatConversation(convRes.documents || []);
 
         // Step 3: Add user message to conversation
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: projectId,
-                role: 'user',
-                content: message,
-                created_at: new Date().toISOString()
-            }
-        ]);
+        await createWebsiteConversationMessage(projectId, 'user', message);
 
         // Step 4: Enhance the revision request
-        // console.log('Enhancing revision request...');
         const enhancedRequest = await enhancePrompt(message);
 
         // Step 5: Add assistant message about enhancement
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: projectId,
-                role: 'assistant',
-                content: `I've enhanced your request to: "${enhancedRequest}"`,
-                created_at: new Date().toISOString()
-            }
-        ]);
+        await createWebsiteConversationMessage(projectId, 'assistant', `I've enhanced your request to: "${enhancedRequest}"`);
 
         // Step 6: Add assistant message about starting changes
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: projectId,
-                role: 'assistant',
-                content: 'Now making changes to your website...',
-                created_at: new Date().toISOString()
-            }
-        ]);
+        await createWebsiteConversationMessage(projectId, 'assistant', 'Now making changes to your website...');
 
         // Step 7: Generate revision
-        // console.log(`Generating revision for project ${projectId}...`);
         const revisedCode = await generateRevision(
-            project.current_code,
+            normalizedProject.current_code,
             enhancedRequest,
             formattedHistory
         );
 
-        // Step 5: Create new version
-        const { data: version, error: versionError } = await supabase
-            .from('website_versions')
-            .insert([
-                {
-                    project_id: projectId,
-                    code: revisedCode
-                }
-            ])
-            .select()
-            .single();
-
-        if (versionError) {
+        // Step 8: Create new version
+        let version;
+        try {
+            version = await createWebsiteVersionDocument({
+                projectId,
+                code: revisedCode
+            });
+        } catch (versionError) {
             console.error('Error creating version:', versionError);
+            await refundWebsiteCreditsWithLock(project.user_email, 1);
             return NextResponse.json(
                 { error: 'Failed to save revision', details: versionError.message },
                 { status: 500 }
             );
         }
 
-        // Step 6: Update project
-        const { error: updateError } = await supabase
-            .from('website_projects')
-            .update({
-                current_code: revisedCode,
-                current_version_id: version.id,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', projectId);
-
-        if (updateError) {
+        // Step 9: Update project
+        try {
+            await updateWebsiteProjectCode(projectId, revisedCode, version.$id);
+        } catch (updateError) {
             console.error('Error updating project:', updateError);
+            await refundWebsiteCreditsWithLock(project.user_email, 1);
+            return NextResponse.json(
+                { error: 'Failed to update project after revision', details: updateError.message },
+                { status: 500 }
+            );
         }
 
-        // Step 8: Add AI success message to conversation
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: projectId,
-                role: 'assistant',
-                content: "I've made the changes to your website! You can now preview it",
-                created_at: new Date().toISOString()
-            }
-        ]);
-
-        // console.log(`Revision completed for project ${projectId}`);
+        // Step 10: Add AI success message to conversation
+        await createWebsiteConversationMessage(projectId, 'assistant', "I've made the changes to your website! You can now preview it");
 
         return NextResponse.json({
             success: true,
-            versionId: version.id,
+            versionId: version.$id,
             message: 'Website updated successfully'
         });
 

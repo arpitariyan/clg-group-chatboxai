@@ -1,6 +1,39 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID } from '@/services/appwrite-admin';
+import {
+    WEBSITE_CREDIT_PACKAGES_COLLECTION_ID,
+    WEBSITE_USER_CREDITS_COLLECTION_ID
+} from '@/services/appwrite-collections';
+import { getOrCreateWebsiteCreditsDoc, recordWebsiteCreditTransaction } from '@/lib/website-builder-server-utils';
+import {
+    getDefaultWebsitePackageById,
+    normalizeWebsiteCreditPackage,
+} from '@/lib/website-credit-packages';
+
+async function addPurchasedCredits(userEmail, amount, orderId, packageId) {
+    const credits = await getOrCreateWebsiteCreditsDoc(userEmail);
+    const newPurchasedCredits = (credits.purchased_credits || 0) + amount;
+
+    const updated = await databases.updateDocument(DB_ID, WEBSITE_USER_CREDITS_COLLECTION_ID, credits.$id, {
+        purchased_credits: newPurchasedCredits
+    });
+
+    await recordWebsiteCreditTransaction({
+        userEmail,
+        amount,
+        transactionType: 'purchase',
+        orderId,
+        packageId
+    });
+
+    return {
+        success: true,
+        purchased_credits: updated.purchased_credits,
+        weekly_credits: updated.weekly_credits,
+        total_credits: (updated.weekly_credits || 0) + updated.purchased_credits
+    };
+}
 
 /**
  * POST /api/website-builder/credits/verify-purchase
@@ -16,7 +49,6 @@ export async function POST(request) {
             email
         } = await request.json();
 
-        // Validate required fields
         if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !packageId || !email) {
             return NextResponse.json(
                 { error: 'Missing required payment verification data' },
@@ -24,7 +56,6 @@ export async function POST(request) {
             );
         }
 
-        // Check Razorpay key secret
         if (!process.env.RAZORPAY_KEY_SECRET) {
             console.error('RAZORPAY_KEY_SECRET not configured');
             return NextResponse.json(
@@ -33,7 +64,6 @@ export async function POST(request) {
             );
         }
 
-        // Verify payment signature
         const generated_signature = crypto
             .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
             .update(`${razorpay_order_id}|${razorpay_payment_id}`)
@@ -47,41 +77,37 @@ export async function POST(request) {
             );
         }
 
-        // Fetch package details
-        const { data: packageData, error: packageError } = await supabase
-            .from('website_credit_packages')
-            .select('*')
-            .eq('id', packageId)
-            .single();
+        // Resolve package details from default catalog first, then DB fallback.
+        let packageData = getDefaultWebsitePackageById(packageId);
+        if (!packageData) {
+            try {
+                const pkgDoc = await databases.getDocument(DB_ID, WEBSITE_CREDIT_PACKAGES_COLLECTION_ID, packageId);
+                packageData = normalizeWebsiteCreditPackage(pkgDoc);
+            } catch {
+                return NextResponse.json(
+                    { error: 'Invalid package' },
+                    { status: 400 }
+                );
+            }
+        }
 
-        if (packageError || !packageData) {
+        if (!packageData.isActive || packageData.credits <= 0 || packageData.priceInr <= 0) {
             return NextResponse.json(
                 { error: 'Invalid package' },
                 { status: 400 }
             );
         }
 
-        // Add purchased credits to user account
-        const { data: result, error: addError } = await supabase
-            .rpc('add_purchased_credits', {
-                p_user_email: email,
-                p_amount: packageData.credits,
-                p_description: `Purchased ${packageData.credits} credits - Order: ${razorpay_order_id}`
-            });
-
-        if (addError) {
-            console.error('Error adding purchased credits:', addError);
-            return NextResponse.json(
-                { error: 'Failed to add credits', details: addError.message },
-                { status: 500 }
-            );
-        }
-
-        const addResult = result[0];
+        const addResult = await addPurchasedCredits(
+            email,
+            packageData.credits,
+            razorpay_order_id,
+            packageId
+        );
 
         if (!addResult.success) {
             return NextResponse.json(
-                { error: addResult.message },
+                { error: addResult.error },
                 { status: 400 }
             );
         }
@@ -96,7 +122,7 @@ export async function POST(request) {
             },
             purchase: {
                 credits: packageData.credits,
-                amount: packageData.price_inr,
+                amount: packageData.priceInr,
                 orderId: razorpay_order_id,
                 paymentId: razorpay_payment_id
             }

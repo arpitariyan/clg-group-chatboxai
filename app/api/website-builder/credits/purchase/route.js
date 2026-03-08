@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import Razorpay from 'razorpay';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID } from '@/services/appwrite-admin';
+import { WEBSITE_CREDIT_PACKAGES_COLLECTION_ID } from '@/services/appwrite-collections';
+import {
+    getDefaultWebsitePackageById,
+    normalizeWebsiteCreditPackage,
+} from '@/lib/website-credit-packages';
 
 /**
  * POST /api/website-builder/credits/purchase
@@ -8,7 +13,6 @@ import { supabase } from '@/services/supabase';
  */
 export async function POST(request) {
     try {
-        // Check Razorpay credentials
         if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
             console.error('Razorpay credentials not configured');
             return NextResponse.json(
@@ -31,27 +35,31 @@ export async function POST(request) {
             );
         }
 
-        // Fetch package details
-        const { data: packageData, error: packageError } = await supabase
-            .from('website_credit_packages')
-            .select('*')
-            .eq('id', packageId)
-            .eq('is_active', true)
-            .single();
+        // Resolve package details from default catalog first, then DB fallback.
+        let packageData = getDefaultWebsitePackageById(packageId);
+        if (!packageData) {
+            try {
+                const pkgDoc = await databases.getDocument(DB_ID, WEBSITE_CREDIT_PACKAGES_COLLECTION_ID, packageId);
+                packageData = normalizeWebsiteCreditPackage(pkgDoc);
+            } catch {
+                return NextResponse.json(
+                    { error: 'Invalid package selected' },
+                    { status: 400 }
+                );
+            }
+        }
 
-        if (packageError || !packageData) {
+        if (!packageData.isActive || packageData.credits <= 0 || packageData.priceInr <= 0) {
             return NextResponse.json(
                 { error: 'Invalid package selected' },
                 { status: 400 }
             );
         }
 
-        // Create receipt (max 40 characters)
         const receipt = `wbc_${Date.now()}`.substring(0, 40);
 
-        // Create Razorpay order (amount in paisa)
         const order = await razorpay.orders.create({
-            amount: packageData.price_inr * 100, // Convert rupees to paisa
+            amount: packageData.priceInr * 100,
             currency: 'INR',
             receipt: receipt,
             payment_capture: 1,
@@ -74,8 +82,8 @@ export async function POST(request) {
             package: {
                 id: packageData.id,
                 credits: packageData.credits,
-                priceInr: packageData.price_inr,
-                displayName: packageData.display_name
+                priceInr: packageData.priceInr,
+                displayName: packageData.displayName
             },
             razorpayKeyId: process.env.RAZORPAY_KEY_ID
         });

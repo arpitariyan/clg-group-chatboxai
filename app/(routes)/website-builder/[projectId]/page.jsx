@@ -1,8 +1,8 @@
 'use client'
 
 import React, { useState, useEffect, useRef } from 'react'
-import { useParams, useRouter } from 'next/navigation'
-import { toast } from 'react-toastify'
+import { useRouter } from 'next/navigation'
+import { toast } from '@/lib/alert'
 import { Loader2Icon } from 'lucide-react'
 import BuilderSidebar from '@/app/_components/builder/BuilderSidebar'
 import BuilderPreview from '@/app/_components/builder/BuilderPreview'
@@ -11,12 +11,15 @@ import CreditInsufficientModal from '@/app/_components/builder/CreditInsufficien
 import CreditPurchaseModal from '@/app/_components/builder/CreditPurchaseModal'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCreditManager } from '@/hooks/useCreditManager'
+import { useIsMobile } from '@/hooks/use-mobile'
 
 export default function WebsiteBuilderPage({ params: paramsPromise }) {
     const [projectId, setProjectId] = useState(null)
     const router = useRouter()
     const { currentUser } = useAuth()
     const previewRef = useRef(null)
+    const generationRequestedRef = useRef(false)
+    const generationRetryStateRef = useRef({ attempts: 0, timer: null })
 
     const [project, setProject] = useState(null)
     const [loading, setLoading] = useState(true)
@@ -25,9 +28,11 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
     const [showInsufficientModal, setShowInsufficientModal] = useState(false)
     const [showPurchaseModal, setShowPurchaseModal] = useState(false)
+    const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+    const isMobile = useIsMobile()
 
     // Credit management
-    const { credits, refreshCredits, hasCredits, loading: creditsLoading } = useCreditManager()
+    const { credits, refreshCredits, hasCredits } = useCreditManager()
 
     // Unwrap params Promise
     useEffect(() => {
@@ -38,10 +43,10 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
 
     // Fetch project data
     const fetchProject = async () => {
-        if (!projectId) return
+        if (!projectId || !currentUser?.email) return
         
         try {
-            const response = await fetch(`/api/website-builder/project/${projectId}`)
+            const response = await fetch(`/api/website-builder/project/${projectId}?userEmail=${encodeURIComponent(currentUser.email)}`)
             const data = await response.json()
 
             if (!response.ok) {
@@ -49,64 +54,192 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
             }
 
             setProject(data.project)
-            setIsGenerating(!data.project.current_code)
+            const conversations = data.project?.conversations || []
+            const lastAssistantMessage = [...conversations]
+                .reverse()
+                .find((item) => item.role === 'assistant')
+
+            const hasGenerationError = Boolean(
+                !data.project.current_code &&
+                lastAssistantMessage?.content?.toLowerCase().includes('error generating your website')
+            )
+
+            setIsGenerating(!data.project.current_code && !hasGenerationError)
+
+            if (hasGenerationError) {
+                toast.error('Website generation failed. Please try again with a new prompt.')
+            }
             setLoading(false)
+            return data.project
         } catch (error) {
             console.error('Error fetching project:', error)
             toast.error(`Failed to load project: ${error.message}`)
             setLoading(false)
+            return null
         }
+    }
+
+    const waitForRevisionResult = async (previousVersionId, timeoutMs = 30000, intervalMs = 2500) => {
+        const startedAt = Date.now()
+
+        while (Date.now() - startedAt < timeoutMs) {
+            const updatedProject = await fetchProject()
+
+            if (
+                updatedProject?.current_version_id &&
+                updatedProject.current_version_id !== previousVersionId &&
+                updatedProject?.current_code
+            ) {
+                return { success: true, project: updatedProject }
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, intervalMs))
+        }
+
+        return { success: false, project: null }
     }
 
     // Handle revision submission
     const handleRevision = async (message) => {
+        const revisionMessage = (message || '').trim()
+
+        if (!revisionMessage) {
+            toast.error('Please enter what you want to change.')
+            return false
+        }
+
+        if (!project?.current_code) {
+            toast.info('Initial website generation is still in progress. Please try again in a moment.')
+            return false
+        }
+
         // Check credits before making revision
         if (!hasCredits(1)) {
             setShowInsufficientModal(true)
-            return
+            return false
         }
 
         try {
             setIsGenerating(true)
-
-            // Start polling for updates
-            const pollInterval = setInterval(fetchProject, 5000)
+            const previousVersionId = project?.current_version_id
 
             const response = await fetch(`/api/website-builder/revision/${projectId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ message }),
+                body: JSON.stringify({
+                    message: revisionMessage,
+                    userEmail: currentUser.email
+                }),
             })
 
             const data = await response.json()
 
             if (!response.ok) {
-                // Handle insufficient credits error
                 if (response.status === 402) {
                     setShowInsufficientModal(true)
                     toast.error(data.message || 'Insufficient credits')
                 } else {
-                    throw new Error(data.error || 'Failed to generate revision')
+                    toast.error(data.error || 'Failed to generate revision')
                 }
-                clearInterval(pollInterval)
                 setIsGenerating(false)
-                return
+                return false
             }
 
-            // Refresh credits after successful operation
             await refreshCredits()
 
-            // Fetch updated project
-            await fetchProject()
-            clearInterval(pollInterval)
+            const revisionResult = await waitForRevisionResult(previousVersionId)
             setIsGenerating(false)
-            toast.success('Website updated!')
+
+            if (revisionResult.success) {
+                toast.success('Website updated!')
+                return true
+            }
+
+            toast.info('Revision request accepted. Update is taking longer than expected; it should appear shortly.')
+            return false
         } catch (error) {
             console.error('Error generating revision:', error)
             toast.error(`Failed to update website: ${error.message}`)
             setIsGenerating(false)
+            return false
+        }
+    }
+
+    const triggerInitialGeneration = async (projectData) => {
+        if (!projectData || !currentUser?.email) return
+        if (projectData.current_code) return
+        if (generationRequestedRef.current) return
+
+        const enhancedPrompt = projectData.enhanced_prompt || projectData.original_prompt
+        if (!enhancedPrompt) {
+            toast.error('Missing prompt data for generation')
+            return
+        }
+
+        generationRequestedRef.current = true
+        setIsGenerating(true)
+
+        try {
+            const response = await fetch('/api/website-builder/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    projectId: projectData.id,
+                    enhancedPrompt,
+                    originalPrompt: projectData.original_prompt,
+                    userEmail: currentUser.email
+                })
+            })
+
+            const data = await response.json()
+            if (!response.ok) {
+                const errorDetails = [data?.error, data?.details].filter(Boolean).join(': ')
+                const error = new Error(errorDetails || 'Failed to generate website')
+                error.status = response.status
+                throw error
+            }
+
+            if (generationRetryStateRef.current.timer) {
+                clearTimeout(generationRetryStateRef.current.timer)
+                generationRetryStateRef.current.timer = null
+            }
+            generationRetryStateRef.current.attempts = 0
+
+            await fetchProject()
+            toast.success('Website generated successfully!')
+        } catch (error) {
+            generationRequestedRef.current = false
+
+            const message = String(error?.message || '').toLowerCase()
+            const status = Number(error?.status || 0)
+            const retryable =
+                status === 429 ||
+                status >= 500 ||
+                message.includes('429') ||
+                message.includes('rate limit') ||
+                message.includes('timeout') ||
+                message.includes('network')
+
+            if (retryable && generationRetryStateRef.current.attempts < 3) {
+                generationRetryStateRef.current.attempts += 1
+                const retryDelay = generationRetryStateRef.current.attempts * 8000
+
+                toast.info(`Generation is busy. Retrying automatically (${generationRetryStateRef.current.attempts}/3)...`)
+
+                generationRetryStateRef.current.timer = setTimeout(() => {
+                    generationRetryStateRef.current.timer = null
+                    triggerInitialGeneration(projectData)
+                }, retryDelay)
+
+                return
+            }
+
+            setIsGenerating(false)
+            toast.error(`Website generation failed: ${error.message}`)
         }
     }
 
@@ -131,6 +264,33 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
         }
     }, [currentUser, projectId, router])
 
+    useEffect(() => {
+        return () => {
+            if (generationRetryStateRef.current.timer) {
+                clearTimeout(generationRetryStateRef.current.timer)
+                generationRetryStateRef.current.timer = null
+            }
+        }
+    }, [])
+
+    useEffect(() => {
+        if (isMobile && isSidebarOpen) {
+            document.body.style.overflow = 'hidden'
+            return () => {
+                document.body.style.overflow = ''
+            }
+        }
+
+        document.body.style.overflow = ''
+        return undefined
+    }, [isMobile, isSidebarOpen])
+
+    useEffect(() => {
+        if (!isMobile) {
+            setIsSidebarOpen(false)
+        }
+    }, [isMobile])
+
     // Poll while generating
     useEffect(() => {
         if (project && !project.current_code) {
@@ -138,6 +298,18 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
             return () => clearInterval(pollInterval)
         }
     }, [project])
+
+    useEffect(() => {
+        if (project && !project.current_code && currentUser?.email) {
+            triggerInitialGeneration(project)
+        } else if (project?.current_code) {
+            generationRetryStateRef.current.attempts = 0
+            if (generationRetryStateRef.current.timer) {
+                clearTimeout(generationRetryStateRef.current.timer)
+                generationRetryStateRef.current.timer = null
+            }
+        }
+    }, [project?.id, project?.current_code, currentUser?.email])
 
     if (loading) {
         return (
@@ -168,27 +340,55 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
             {/* Builder Navbar */}
             <BuilderNavbar
                 project={project}
+                projectId={projectId}
                 device={device}
                 onDeviceChange={setDevice}
+                onBack={() => router.push('/app')}
                 previewRef={previewRef}
                 hasUnsavedChanges={hasUnsavedChanges}
                 onUnsavedChangesReset={() => setHasUnsavedChanges(false)}
                 onProjectUpdate={fetchProject}
                 credits={credits}
                 onRefreshCredits={refreshCredits}
+                userEmail={currentUser?.email}
+                isMobile={isMobile}
+                onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
             />
 
             {/* Main Content: Sidebar + Preview */}
-            <div className="flex-1 flex overflow-hidden">
-                {/* Left Sidebar */}
-                <BuilderSidebar
-                    project={project}
-                    isGenerating={isGenerating}
-                    onRevision={handleRevision}
-                />
+            <div className="flex-1 flex min-h-0 overflow-hidden">
+                {/* Left Sidebar (desktop) */}
+                <div className="hidden md:block h-full w-full max-w-sm shrink-0 border-r border-gray-800">
+                    <BuilderSidebar
+                        project={project}
+                        isGenerating={isGenerating}
+                        onRevision={handleRevision}
+                        userEmail={currentUser?.email}
+                    />
+                </div>
+
+                {/* Left Sidebar (mobile drawer) */}
+                {isMobile && isSidebarOpen && (
+                    <>
+                        <button
+                            type="button"
+                            aria-label="Close revisions panel"
+                            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+                            onClick={() => setIsSidebarOpen(false)}
+                        />
+                        <div className="fixed inset-y-0 left-0 z-50 w-[88vw] max-w-sm border-r border-gray-800 bg-gray-900 shadow-2xl">
+                            <BuilderSidebar
+                                project={project}
+                                isGenerating={isGenerating}
+                                onRevision={handleRevision}
+                                userEmail={currentUser?.email}
+                            />
+                        </div>
+                    </>
+                )}
 
                 {/* Right Preview */}
-                <div className="flex-1 p-2 pl-0 overflow-hidden dark:bg-[oklch(0.3092_0_0)]">
+                <div className="flex-1 min-w-0 overflow-hidden p-2 md:pl-0 dark:bg-[oklch(0.3092_0_0)]">
                     <BuilderPreview
                         ref={previewRef}
                         project={project}

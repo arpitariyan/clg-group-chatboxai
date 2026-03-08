@@ -1,17 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-// Create Supabase client with service role
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  }
-);
+import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, BUG_REPORTS_COLLECTION_ID } from '@/services/appwrite-collections';
 
 export async function POST(request) {
   try {
@@ -41,13 +30,13 @@ export async function POST(request) {
     }
 
     // Get user
-    const { data: user, error: userError } = await supabase
-      .from('Users')
-      .select('email')
-      .eq('email', user_email)
-      .single();
+    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', user_email),
+      Query.limit(1)
+    ]);
+    const user = userRes.documents[0];
 
-    if (userError || !user) {
+    if (!user) {
       return NextResponse.json(
         { error: 'User not found' },
         { status: 404 }
@@ -55,25 +44,17 @@ export async function POST(request) {
     }
 
     // Insert bug report
-    const { data: bugReport, error: insertError } = await supabase
-      .from('bug_reports')
-      .insert({
-        user_email: user_email,
-        title: title.trim(),
-        description: description.trim(),
-        status: 'open'
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      throw insertError;
-    }
+    const bugReport = await databases.createDocument(DB_ID, BUG_REPORTS_COLLECTION_ID, ID.unique(), {
+      user_email: user_email,
+      title: title.trim(),
+      description: description.trim(),
+      status: 'open'
+    });
 
     return NextResponse.json({
       success: true,
       message: 'Bug report submitted successfully',
-      report_id: bugReport.id,
+      report_id: bugReport.$id,
       status: bugReport.status
     });
 
@@ -104,13 +85,13 @@ export async function GET(request) {
     }
 
     // Get user
-    const { data: user, error: userError } = await supabase
-      .from('Users')
-      .select('email')
-      .eq('email', user_email)
-      .single();
+    const userGetRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', user_email),
+      Query.limit(1)
+    ]);
+    const userGet = userGetRes.documents[0];
 
-    if (userError || !user) {
+    if (!userGet) {
       return NextResponse.json(
         { error: 'User not found' },
         { status: 404 }
@@ -118,19 +99,15 @@ export async function GET(request) {
     }
 
     // Get user's bug reports
-    const { data: bugReports, error: reportsError } = await supabase
-      .from('bug_reports')
-      .select('id, title, description, status, created_at')
-      .eq('user_email', user_email)
-      .order('created_at', { ascending: false });
-
-    if (reportsError) {
-      throw reportsError;
-    }
+    const bugReportsRes = await databases.listDocuments(DB_ID, BUG_REPORTS_COLLECTION_ID, [
+      Query.equal('user_email', user_email),
+      Query.orderDesc('$createdAt'),
+      Query.limit(100)
+    ]);
 
     return NextResponse.json({
       success: true,
-      reports: bugReports || []
+      reports: bugReportsRes.documents
     });
 
   } catch (error) {

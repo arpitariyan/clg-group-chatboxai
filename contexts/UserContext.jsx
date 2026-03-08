@@ -2,9 +2,10 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
-import { supabase } from '@/services/supabase';
+import axios from 'axios';
 
 const UserContext = createContext({});
+const SPECIAL_ACCOUNT_EMAIL = 'arpitariyanm@gmail.com';
 
 export const useUser = () => {
   const context = useContext(UserContext);
@@ -42,6 +43,16 @@ export const UserProvider = ({ children }) => {
   const [refreshing, setRefreshing] = useState(false);
   const [dbError, setDbError] = useState(false); // true when Supabase is unreachable
 
+  const applySpecialAccountOverrides = (email, profile) => {
+    if (email !== SPECIAL_ACCOUNT_EMAIL || !profile) return profile;
+
+    return {
+      ...profile,
+      plan: 'pro',
+      credits: typeof profile.credits === 'number' ? profile.credits : 25000,
+    };
+  };
+
   const fetchUserData = async (user) => {
     if (!user) {
       setUserData(null);
@@ -49,80 +60,31 @@ export const UserProvider = ({ children }) => {
       return;
     }
 
-    // Owner account — skip all Supabase queries, use hardcoded pro profile
-    if (user.email === 'arpitariyanm@gmail.com') {
-      setDbError(false);
-      setUserData({
-        email: 'arpitariyanm@gmail.com',
-        name: user.displayName || 'Arpit',
-        plan: 'pro',
-        credits: 25000,
-        mfa_enabled: false,
-        accent_color: 'violet',
-        language: 'en',
-        subscription_start_date: null,
-        subscription_end_date: null,
-        last_monthly_reset: null,
-      });
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
     try {
       setRefreshing(true);
-      
-      // Check if user exists in Supabase
-      let { data: existingUser, error } = await supabase
-        .from('Users')
-        .select('*')
-        .eq('email', user.email)
-        .single();
 
-      if (error && error.code !== 'PGRST116') {
-        // Network/connection errors (e.g. Supabase paused or timeout) — handle gracefully
-        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
-        console.error('Error fetching user from Supabase:', error?.message || JSON.stringify(error));
-        if (isTimeout) {
-          console.warn('[UserContext] Supabase is unreachable (timeout). Check if your Supabase project is paused at https://supabase.com/dashboard');
-          setDbError(true);
-        }
-        setUserData(null);
-        setLoading(false);
-        setRefreshing(false);
-        return;
-      }
-
-      // If user doesn't exist, create them
-      if (!existingUser) {
-        const newUser = {
+      const res = await axios.get('/api/user/profile', {
+        params: {
           email: user.email,
           name: user.displayName || getUserNameFromEmail(user.email),
-          plan: 'free',
-          credits: 5000,
-          last_monthly_reset: new Date().toISOString().split('T')[0],
-          mfa_enabled: false,
-          accent_color: 'violet',
-          language: 'en'
-        };
+          createIfMissing: true,
+        },
+      });
 
-        const { data: createdUser, error: createError } = await supabase
-          .from('Users')
-          .insert([newUser])
-          .select()
-          .single();
-
-        if (createError) throw createError;
-        existingUser = createdUser;
-      }
-
-      setUserData(existingUser);
+      const fetchedUser = res?.data?.user || null;
+      
+      // console.log('=== fetchUserData result ===', {
+      //   mfa_enabled: fetchedUser?.mfa_enabled,
+      //   mfa_email: fetchedUser?.mfa_email,
+      //   updatedAt: fetchedUser?.$updatedAt,
+      //   docId: fetchedUser?.$id
+      // });
+      
+      setUserData(applySpecialAccountOverrides(user.email, fetchedUser));
     } catch (error) {
-      if (error && error.message) {
-        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
-        if (isTimeout) setDbError(true);
-        console.error('Error fetching user data:', error);
-      }
+      const isTimeout = error?.message?.includes('timeout') || error?.message?.includes('fetch failed');
+      if (isTimeout) setDbError(true);
+      console.error('Error fetching user data:', error?.message || error);
       setUserData(null);
     } finally {
       setLoading(false);
@@ -133,41 +95,40 @@ export const UserProvider = ({ children }) => {
 
   // Update user data
   const updateUserData = async (updates) => {
-    if (!currentUser || !userData) return null;
-
-    // Owner account — update state in memory only, never touch Supabase
-    if (currentUser.email === 'arpitariyanm@gmail.com') {
-      const updated = { ...userData, ...updates };
-      setUserData(updated);
-      return updated;
-    }
+    if (!currentUser) return null;
 
     try {
-      const { data: updatedUser, error } = await supabase
-        .from('Users')
-        .update(updates)
-        .eq('email', currentUser.email)
-        .select()
-        .single();
+      const response = await axios.patch('/api/user/profile', {
+        email: currentUser.email,
+        updates,
+      });
 
-      if (error) {
-        const isTimeout = error.code === 'TIMEOUT' || error.message?.includes('timeout') || error.message?.includes('fetch failed');
-        if (isTimeout) {
-          // Supabase unreachable — apply update optimistically in memory
-          console.warn('[UserContext] Supabase unreachable in updateUserData, applying update locally');
-          const updated = { ...userData, ...updates };
-          setUserData(updated);
-          return updated;
-        }
-        throw error;
-      }
+      // Merge existing state + optimistic updates + API response
+      // This ensures if the API response is missing a field like mfa_enabled,
+      // the local state will still optimistically reflect the requested update.
+      const merged = {
+        ...(userData || {}),
+        ...updates,
+        ...(response?.data?.user || {}),
+      };
+
+      const updatedUser = applySpecialAccountOverrides(currentUser.email, merged);
 
       setUserData(updatedUser);
       return updatedUser;
     } catch (error) {
+      const isNameUpdate = Object.prototype.hasOwnProperty.call(updates || {}, 'name');
+      const isTimeout = error?.message?.includes('timeout') || error?.message?.includes('fetch failed');
+      if (isTimeout) {
+        console.warn('[UserContext] Appwrite unreachable in updateUserData, applying update locally');
+      }
       console.warn('[UserContext] Error updating user data (non-fatal):', error?.message || error);
+      if (isNameUpdate) {
+        // Name changes must persist in DB; do not mask failures with optimistic local-only state.
+        throw error;
+      }
       // Apply update optimistically so the UI stays consistent
-      const updated = { ...userData, ...updates };
+      const updated = applySpecialAccountOverrides(currentUser.email, { ...(userData || {}), ...updates });
       setUserData(updated);
       return updated;
     }
@@ -251,7 +212,7 @@ export const UserProvider = ({ children }) => {
       if (userData?.plan !== 'pro') return false;
       
       // Special account check - always Pro
-      if (currentUser?.email === 'arpitariyanm@gmail.com') return true;
+      if (currentUser?.email === SPECIAL_ACCOUNT_EMAIL) return true;
       
       // Check subscription expiry
       if (userData?.subscription_end_date) {
@@ -263,7 +224,7 @@ export const UserProvider = ({ children }) => {
       // If no end date but plan is pro, consider it active (for backwards compatibility)
       return true;
     })(),
-    isSpecialAccount: currentUser?.email === 'arpitariyanm@gmail.com'
+    isSpecialAccount: currentUser?.email === SPECIAL_ACCOUNT_EMAIL
   };
 
   return (

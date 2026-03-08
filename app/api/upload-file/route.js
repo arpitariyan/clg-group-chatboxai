@@ -1,18 +1,17 @@
 /**
  * Server-side file upload/delete API route for chat file attachments.
- * Uses supabaseAdmin (service role key) to bypass RLS on the mainStorage bucket,
- * replacing the previous client-side supabase.storage calls in DisplayResult.jsx.
+ * Uses Appwrite Storage (mainStorage bucket) with server-side API key.
  */
 import { NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/services/supabase-admin';
-import { v4 as uuidv4 } from 'uuid';
+import { storage, BUCKET_ID, getFileUrl, ID, createAppwriteFile } from '@/services/appwrite-admin';
+
+const FALLBACK_BUCKET_ID = process.env.APPWRITE_STORAGE_BUCKET_DOC_ID || '69a69b9c0009d1b683dd';
 
 // POST /api/upload-file — upload a file to mainStorage
 export async function POST(request) {
     try {
         const formData = await request.formData();
         const file = formData.get('file');
-        const userId = formData.get('userId') || 'anonymous';
 
         if (!file) {
             return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -43,43 +42,54 @@ export async function POST(request) {
             );
         }
 
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${uuidv4()}.${fileExt}`;
-        const filePath = `uploads/${userId}/${fileName}`;
-
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
 
-        const { error: uploadError } = await supabaseAdmin.storage
-            .from('mainStorage')
-            .upload(filePath, buffer, {
-                contentType: file.type,
-                cacheControl: '3600',
-                upsert: false,
-            });
+        let uploaded;
+        let usedBucketId = BUCKET_ID;
 
-        if (uploadError) {
-            console.error('Storage upload error:', uploadError);
-            return NextResponse.json(
-                { error: `Failed to upload ${file.name}: ${uploadError.message}` },
-                { status: 500 }
+        try {
+            uploaded = await storage.createFile(
+                BUCKET_ID,
+                ID.unique(),
+                createAppwriteFile(buffer, file.name, file.type || 'application/octet-stream'),
+            );
+        } catch (error) {
+            const isBucketNotFound = error?.code === 404 || error?.type === 'storage_bucket_not_found';
+
+            if (!isBucketNotFound || BUCKET_ID === FALLBACK_BUCKET_ID) {
+                throw error;
+            }
+
+            usedBucketId = FALLBACK_BUCKET_ID;
+            uploaded = await storage.createFile(
+                usedBucketId,
+                ID.unique(),
+                createAppwriteFile(buffer, file.name, file.type || 'application/octet-stream'),
             );
         }
 
-        const { data: { publicUrl } } = supabaseAdmin.storage
-            .from('mainStorage')
-            .getPublicUrl(filePath);
+        const fileId = uploaded.$id;
+        const publicUrl = usedBucketId === BUCKET_ID
+            ? getFileUrl(fileId)
+            : `${process.env.APPWRITE_ENDPOINT || process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1'}/storage/buckets/${usedBucketId}/files/${fileId}/view?project=${process.env.APPWRITE_PROJECT_ID || process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID || ''}`;
 
         return NextResponse.json({
             success: true,
-            path: filePath,
+            path: fileId,       // fileId is used as the reference for deletion
             publicUrl,
             fileName: file.name,
             fileType: file.type,
             fileSize: file.size,
         });
     } catch (error) {
-        console.error('Upload route error:', error);
+        console.error('Upload route error:', {
+            message: error?.message,
+            code: error?.code,
+            type: error?.type,
+            configuredBucketId: BUCKET_ID,
+            fallbackBucketId: FALLBACK_BUCKET_ID,
+        });
         return NextResponse.json(
             { error: error.message || 'Upload failed' },
             { status: 500 }
@@ -96,22 +106,7 @@ export async function DELETE(request) {
             return NextResponse.json({ error: 'No file path provided' }, { status: 400 });
         }
 
-        // Security: only allow deletion inside the uploads/ prefix
-        if (!path.startsWith('uploads/')) {
-            return NextResponse.json({ error: 'Invalid file path' }, { status: 403 });
-        }
-
-        const { error } = await supabaseAdmin.storage
-            .from('mainStorage')
-            .remove([path]);
-
-        if (error) {
-            console.error('Storage delete error:', error);
-            return NextResponse.json(
-                { error: `Failed to delete file: ${error.message}` },
-                { status: 500 }
-            );
-        }
+        await storage.deleteFile(BUCKET_ID, path);
 
         return NextResponse.json({ success: true });
     } catch (error) {

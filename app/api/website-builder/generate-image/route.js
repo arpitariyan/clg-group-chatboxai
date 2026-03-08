@@ -1,13 +1,9 @@
-import { NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+﻿import { NextResponse } from 'next/server'
+import { storage, databases, DB_ID, BUCKET_ID, getFileUrl, ID, createAppwriteFile } from '@/services/appwrite-admin'
 import { getAuth } from '@clerk/nextjs/server'
 import OpenAI from 'openai'
 import sharp from 'sharp'
-
-const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-)
+import { WEBSITE_IMAGES_COLLECTION_ID } from '@/services/appwrite-collections'
 
 // Get available A4F API keys with fallback
 const getA4FApiKeys = () => {
@@ -75,7 +71,6 @@ export async function POST(request) {
             )
         }
 
-        // Get A4F API keys
         const apiKeys = getA4FApiKeys()
         if (!apiKeys || apiKeys.length === 0) {
             return NextResponse.json(
@@ -84,7 +79,6 @@ export async function POST(request) {
             )
         }
 
-        // Generate image using a4f with imagen-4 model
         const requestData = {
             model: 'provider-4/imagen-4',
             prompt: prompt,
@@ -103,7 +97,6 @@ export async function POST(request) {
 
         const imageUrl = result.response.data[0].url
 
-        // Download the image
         const imageResponse = await fetch(imageUrl)
         if (!imageResponse.ok) {
             throw new Error('Failed to download generated image')
@@ -111,59 +104,32 @@ export async function POST(request) {
 
         const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
 
-        // Process image with sharp (optimize)
         const processedImageBuffer = await sharp(imageBuffer)
             .png({ quality: 90, compressionLevel: 9 })
             .toBuffer()
 
-        // Generate unique filename
         const timestamp = Date.now()
         const randomStr = Math.random().toString(36).substring(7)
         const fileName = `generated_${timestamp}_${randomStr}.png`
-        
-        const filePath = projectId 
-            ? `website-builder-images/${projectId}/${fileName}`
-            : `website-builder-images/${userId}/${fileName}`
 
-        // Upload to Supabase Storage
-        const { data: uploadData, error: uploadError } = await supabase.storage
-            .from('mainStorage')
-            .upload(filePath, processedImageBuffer, {
-                contentType: 'image/png',
-                cacheControl: '3600',
-                upsert: false
-            })
-
-        if (uploadError) {
-            console.error('Upload error:', uploadError)
-            return NextResponse.json(
-                { error: 'Failed to upload image' },
-                { status: 500 }
-            )
-        }
-
-        // Get public URL
-        const { data: { publicUrl } } = supabase.storage
-            .from('mainStorage')
-            .getPublicUrl(filePath)
+        // Upload to Appwrite Storage
+        const inputFile = createAppwriteFile(processedImageBuffer, fileName, 'image/png')
+        const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), inputFile)
+        const publicUrl = getFileUrl(uploaded.$id)
 
         // Store image record in database if projectId provided
         if (projectId) {
-            const { error: dbError } = await supabase
-                .from('website_images')
-                .insert({
+            try {
+                await databases.createDocument(DB_ID, WEBSITE_IMAGES_COLLECTION_ID, ID.unique(), {
                     project_id: projectId,
                     image_url: publicUrl,
-                    file_path: filePath,
+                    file_id: uploaded.$id,
                     type: 'generated',
-                    metadata: {
-                        prompt: prompt,
-                        model: 'provider-4/imagen-4',
-                        size: '1024x1024'
-                    }
+                    prompt: prompt,
+                    model: 'provider-4/imagen-4',
+                    size: '1024x1024'
                 })
-
-            if (dbError) {
+            } catch (dbError) {
                 console.error('Database error:', dbError)
                 // Don't fail the request if database insert fails
             }
@@ -172,7 +138,7 @@ export async function POST(request) {
         return NextResponse.json({
             success: true,
             url: publicUrl,
-            filePath: filePath,
+            fileId: uploaded.$id,
             fileName: fileName,
             prompt: prompt
         })

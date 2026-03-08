@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID } from '@/services/appwrite-collections';
 
 export async function GET(request) {
   try {
@@ -11,34 +12,53 @@ export async function GET(request) {
 
     const offset = (page - 1) * limit;
 
-    // Build query
-    let query = supabase
-      .from('Users')
-      .select('*', { count: 'exact' });
+    // Build query filters
+    const filters = [];
 
-    // Apply search filter
     if (search) {
-      query = query.or(`email.ilike.%${search}%,name.ilike.%${search}%`);
+      // Search by email or name using separate queries, merge results
+      const [emailRes, nameRes] = await Promise.all([
+        databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+          Query.search('email', search),
+          Query.limit(200),
+        ]),
+        databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+          Query.search('name', search),
+          Query.limit(200),
+        ]),
+      ]);
+      const seen = new Set();
+      const merged = [];
+      for (const doc of [...emailRes.documents, ...nameRes.documents]) {
+        if (!seen.has(doc.$id)) {
+          seen.add(doc.$id);
+          if (plan === 'all' || doc.plan === plan) merged.push(doc);
+        }
+      }
+      merged.sort((a, b) => new Date(b.$createdAt) - new Date(a.$createdAt));
+      const total = merged.length;
+      const users = merged.slice(offset, offset + limit);
+      return NextResponse.json({ users, total, page, limit });
     }
 
-    // Apply plan filter
     if (plan !== 'all') {
-      query = query.eq('plan', plan);
+      filters.push(Query.equal('plan', plan));
     }
+    filters.push(Query.orderDesc('$createdAt'));
+    filters.push(Query.limit(limit));
+    filters.push(Query.offset(offset));
 
-    // Order by created_at descending
-    query = query.order('created_at', { ascending: false });
+    const res = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, filters);
 
-    // Apply pagination
-    query = query.range(offset, offset + limit - 1);
-
-    const { data: users, count, error } = await query;
-
-    if (error) throw error;
+    // Get total count (separate query without pagination)
+    const countFilters = [];
+    if (plan !== 'all') countFilters.push(Query.equal('plan', plan));
+    countFilters.push(Query.limit(1));
+    const countRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, countFilters);
 
     return NextResponse.json({
-      users: users || [],
-      total: count || 0,
+      users: res.documents,
+      total: countRes.total,
       page,
       limit,
     });

@@ -19,8 +19,8 @@ export default function CreditInsufficientModal({
     const weeklyResetTime = credits?.weekStartDate ? formatTimeUntilReset(credits.weekStartDate) : 'Soon'
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="relative bg-gray-900 rounded-xl shadow-2xl border border-gray-800 max-w-md w-full mx-4">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
+            <div className="relative bg-gray-900 rounded-t-xl sm:rounded-xl shadow-2xl border border-gray-800 max-w-md w-full max-h-[95vh] overflow-y-auto">
                 {/* Header */}
                 <div className="p-6 border-b border-gray-800">
                     <div className="flex items-center gap-3 mb-2">
@@ -57,7 +57,7 @@ export default function CreditInsufficientModal({
                         {/* Wait for Reset */}
                         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
                             <div className="flex items-start gap-3">
-                                <Clock className="size-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                                <Clock className="size-5 text-blue-400 mt-0.5 shrink-0" />
                                 <div>
                                     <h3 className="font-medium text-blue-400 mb-1">Wait for Weekly Reset</h3>
                                     <p className="text-sm text-gray-400">
@@ -70,7 +70,7 @@ export default function CreditInsufficientModal({
                         {/* Purchase Credits */}
                         <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-lg p-4">
                             <div className="flex items-start gap-3">
-                                <Coins className="size-5 text-indigo-400 mt-0.5 flex-shrink-0" />
+                                <Coins className="size-5 text-indigo-400 mt-0.5 shrink-0" />
                                 <div className="flex-1">
                                     <h3 className="font-medium text-indigo-400 mb-1">Buy Extra Credits</h3>
                                     <p className="text-sm text-gray-400 mb-3">
@@ -93,7 +93,7 @@ export default function CreditInsufficientModal({
                         {!isPro && (
                             <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4">
                                 <div className="flex items-start gap-3">
-                                    <Crown className="size-5 text-purple-400 mt-0.5 flex-shrink-0" />
+                                    <Crown className="size-5 text-purple-400 mt-0.5 shrink-0" />
                                     <div>
                                         <h3 className="font-medium text-purple-400 mb-1">Upgrade to Pro</h3>
                                         <p className="text-sm text-gray-400">
@@ -107,7 +107,7 @@ export default function CreditInsufficientModal({
                 </div>
 
                 {/* Footer */}
-                <div className="p-6 border-t border-gray-800 flex gap-3">
+                <div className="p-4 sm:p-6 border-t border-gray-800 flex gap-3 sticky bottom-0 bg-gray-900">
                     <button
                         onClick={onClose}
                         className="flex-1 py-2.5 bg-gray-800 hover:bg-gray-700 text-white rounded-lg font-medium transition-colors"

@@ -1,5 +1,11 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import {
+  USERS_COLLECTION_ID,
+  BUG_REPORTS_COLLECTION_ID,
+  SUBSCRIPTIONS_COLLECTION_ID,
+  USAGE_LOGS_COLLECTION_ID
+} from '@/services/appwrite-collections';
 
 export async function DELETE(request) {
   try {
@@ -23,13 +29,13 @@ export async function DELETE(request) {
     }
 
     // Get user data
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id, email, plan')
-      .eq('email', email)
-      .single();
+    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', email),
+      Query.limit(1)
+    ]);
+    const user = userRes.documents[0];
 
-    if (userError || !user) {
+    if (!user) {
       return NextResponse.json(
         { error: 'User not found' },
         { status: 404 }
@@ -41,51 +47,39 @@ export async function DELETE(request) {
 
     try {
       // 1. Delete bug reports
-      const { error: bugReportsError } = await supabase
-        .from('bug_reports')
-        .delete()
-        .eq('user_id', user.id);
-      
-      if (bugReportsError) {
-        deletionSteps.push('Failed to delete bug reports');
-        throw bugReportsError;
+      const bugReportsRes = await databases.listDocuments(DB_ID, BUG_REPORTS_COLLECTION_ID, [
+        Query.equal('user_email', email),
+        Query.limit(100)
+      ]);
+      for (const doc of bugReportsRes.documents) {
+        await databases.deleteDocument(DB_ID, BUG_REPORTS_COLLECTION_ID, doc.$id);
       }
-
       // 2. Delete subscriptions
-      const { error: subscriptionsError } = await supabase
-        .from('subscriptions')
-        .delete()
-        .eq('user_id', user.id);
-      
-      if (subscriptionsError) {
-        deletionSteps.push('Failed to delete subscriptions');
-        throw subscriptionsError;
+      const subscriptionsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+        Query.equal('user_email', email),
+        Query.limit(100)
+      ]);
+      for (const doc of subscriptionsRes.documents) {
+        await databases.deleteDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, doc.$id);
       }
-
       // 3. Delete usage logs (if exists)
       try {
-        await supabase
-          .from('usage_logs')
-          .delete()
-          .eq('user_id', user.id);
+        const usageLogsRes = await databases.listDocuments(DB_ID, USAGE_LOGS_COLLECTION_ID, [
+          Query.equal('user_email', email),
+          Query.limit(100)
+        ]);
+        for (const doc of usageLogsRes.documents) {
+          await databases.deleteDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, doc.$id);
+        }
       } catch (logError) {
-        console.warn('Usage logs table may not exist:', logError);
+        console.warn('Usage logs deletion issue:', logError);
       }
 
       // 4. Finally delete the user
-      const { error: userDeleteError } = await supabase
-        .from('users')
-        .delete()
-        .eq('id', user.id);
-
-      if (userDeleteError) {
-        deletionSteps.push('Failed to delete user record');
-        throw userDeleteError;
-      }
+      await databases.deleteDocument(DB_ID, USERS_COLLECTION_ID, user.$id);
 
       // Log the deletion for audit purposes
-      console.log(`Account deleted: ${email} (ID: ${user.id})`);
-
+      console.log(`Account deleted: ${email} (ID: ${user.$id})`);
       return NextResponse.json({
         success: true,
         message: 'Account successfully deleted',
@@ -140,13 +134,13 @@ export async function GET(request) {
     }
 
     // Get user data
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id, email, plan, created_at')
-      .eq('email', email)
-      .single();
+    const getUserRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', email),
+      Query.limit(1)
+    ]);
+    const getUser = getUserRes.documents[0];
 
-    if (userError || !user) {
+    if (!getUser) {
       return NextResponse.json({
         eligible: false,
         reason: 'User not found'
@@ -154,28 +148,30 @@ export async function GET(request) {
     }
 
     // Check for active subscriptions
-    const { data: subscriptions, error: subError } = await supabase
-      .from('subscriptions')
-      .select('id, status')
-      .eq('user_id', user.id)
-      .eq('status', 'active');
-
-    if (subError) {
+    let subscriptions = [];
+    try {
+      const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+        Query.equal('user_email', email),
+        Query.equal('status', 'active'),
+        Query.limit(100)
+      ]);
+      subscriptions = subsRes.documents;
+    } catch (subError) {
       console.error('Error checking subscriptions:', subError);
     }
 
-    const hasActiveSubscription = subscriptions && subscriptions.length > 0;
+    const hasActiveSubscription = subscriptions.length > 0;
 
     return NextResponse.json({
       eligible: true,
       user: {
-        email: user.email,
-        plan: user.plan,
-        created_at: user.created_at
+        email: getUser.email,
+        plan: getUser.plan,
+        created_at: getUser.$createdAt
       },
       warnings: {
         has_active_subscription: hasActiveSubscription,
-        subscription_count: subscriptions?.length || 0
+        subscription_count: subscriptions.length
       },
       deletion_info: {
         data_deleted: [

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { WEBSITE_PROJECTS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { normalizeDoc, normalizeWebsiteProject } from '@/lib/website-builder-server-utils';
 
 export async function GET(request) {
     try {
@@ -9,45 +11,63 @@ export async function GET(request) {
         const search = searchParams.get('search') || '';
         const date = searchParams.get('date') || '';
 
-        const from = (page - 1) * limit;
-        const to = from + limit - 1;
+        const offset = (page - 1) * limit;
 
-        let query = supabase
-            .from('website_projects')
-            .select('id, project_name, user_email, current_code, created_at, updated_at', { count: 'exact' })
-            .eq('is_published', true)
-            .order('updated_at', { ascending: false });
+        const filters = [
+            Query.equal('is_published', true),
+            Query.orderDesc('$updatedAt'),
+            Query.limit(limit),
+            Query.offset(offset)
+        ];
 
-        // Add search filter if provided
-        if (search) {
-            query = query.ilike('project_name', `%${search}%`);
-        }
-
-        // Add date filter if provided
         if (date) {
-            // Filter by date (matches the entire day)
             const startOfDay = new Date(date);
             startOfDay.setHours(0, 0, 0, 0);
-
             const endOfDay = new Date(date);
             endOfDay.setHours(23, 59, 59, 999);
-
-            query = query
-                .gte('updated_at', startOfDay.toISOString())
-                .lte('updated_at', endOfDay.toISOString());
+            filters.push(Query.greaterThanEqual('$updatedAt', startOfDay.toISOString()));
+            filters.push(Query.lessThanEqual('$updatedAt', endOfDay.toISOString()));
         }
 
-        const { data: projects, error: projectsError, count } = await query
-            .range(from, to);
+        let res;
+        try {
+            if (search) {
+                filters.push(Query.search('project_name', search));
+            }
+            res = await databases.listDocuments(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, filters);
+        } catch (projectsError) {
+            const retryWithName = Boolean(search);
 
-        if (projectsError) {
-            const isTimeout = projectsError.code === 'TIMEOUT' ||
-                projectsError.message?.includes('timeout') ||
+            if (retryWithName) {
+                try {
+                    const fallbackFilters = [
+                        Query.equal('is_published', true),
+                        Query.orderDesc('$updatedAt'),
+                        Query.limit(limit),
+                        Query.offset(offset),
+                        Query.search('name', search)
+                    ];
+                    res = await databases.listDocuments(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, fallbackFilters);
+                    return NextResponse.json({
+                        success: true,
+                        projects: (res.documents || []).map((doc) => normalizeWebsiteProject(normalizeDoc(doc))),
+                        pagination: {
+                            page,
+                            limit,
+                            total: res.total || 0,
+                            totalPages: Math.ceil((res.total || 0) / limit)
+                        }
+                    });
+                } catch {
+                    // Continue with existing error handling.
+                }
+            }
+
+            const isTimeout = projectsError.message?.includes('timeout') ||
                 projectsError.message?.includes('fetch failed');
 
             if (isTimeout) {
-                // Supabase unreachable — return empty list gracefully instead of 500
-                console.warn('[published] Supabase unreachable, returning empty projects');
+                console.warn('[published] Appwrite unreachable, returning empty projects');
                 return NextResponse.json({
                     success: true,
                     projects: [],
@@ -65,12 +85,12 @@ export async function GET(request) {
 
         return NextResponse.json({
             success: true,
-            projects: projects || [],
+            projects: (res.documents || []).map((doc) => normalizeWebsiteProject(normalizeDoc(doc))),
             pagination: {
                 page,
                 limit,
-                total: count || 0,
-                totalPages: Math.ceil((count || 0) / limit)
+                total: res.total || 0,
+                totalPages: Math.ceil((res.total || 0) / limit)
             }
         });
 

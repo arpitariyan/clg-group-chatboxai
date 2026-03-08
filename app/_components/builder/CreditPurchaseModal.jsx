@@ -2,8 +2,15 @@
 
 import React, { useState, useEffect } from 'react'
 import { X, Coins, Loader2, Check } from 'lucide-react'
-import { toast } from 'react-toastify'
+import { toast } from '@/lib/alert'
 import { useAuth } from '@/contexts/AuthContext'
+
+const FALLBACK_PACKAGES = [
+    { id: 'default_10', credits: 10, priceInr: 49, displayName: '10 Credits' },
+    { id: 'default_20', credits: 20, priceInr: 69, displayName: '20 Credits' },
+    { id: 'default_50', credits: 50, priceInr: 79, displayName: '50 Credits' },
+    { id: 'default_100', credits: 100, priceInr: 99, displayName: '100 Credits' },
+]
 
 /**
  * Modal for purchasing extra website builder credits
@@ -38,10 +45,12 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
                 throw new Error(data.error || 'Failed to fetch packages')
             }
 
-            setPackages(data.packages)
+            const apiPackages = Array.isArray(data.packages) ? data.packages : []
+            setPackages(apiPackages.length > 0 ? apiPackages : FALLBACK_PACKAGES)
         } catch (error) {
             console.error('Error fetching packages:', error)
-            toast.error('Failed to load credit packages')
+            setPackages(FALLBACK_PACKAGES)
+            toast.error('Using default credit packages')
         } finally {
             setLoading(false)
         }
@@ -164,10 +173,10 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
     if (!isOpen) return null
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="relative bg-gray-900 rounded-xl shadow-2xl border border-gray-800 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-2 sm:p-4">
+            <div className="relative bg-gray-900 rounded-t-xl sm:rounded-xl shadow-2xl border border-gray-800 max-w-2xl w-full max-h-[95vh] overflow-y-auto">
                 {/* Header */}
-                <div className="sticky top-0 bg-gray-900 border-b border-gray-800 p-6 flex items-center justify-between">
+                <div className="sticky top-0 z-10 bg-gray-900 border-b border-gray-800 p-4 sm:p-6 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <div className="p-2 bg-indigo-500/10 rounded-lg">
                             <Coins className="size-6 text-indigo-400" />
@@ -187,7 +196,7 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
                 </div>
 
                 {/* Content */}
-                <div className="p-6">
+                <div className="p-4 sm:p-6">
                     {loading ? (
                         <div className="flex items-center justify-center py-12">
                             <Loader2 className="size-8 animate-spin text-indigo-500" />

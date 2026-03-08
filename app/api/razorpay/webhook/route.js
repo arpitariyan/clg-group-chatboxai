@@ -1,18 +1,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
-import { createClient } from '@supabase/supabase-js';
-
-// Create Supabase client with service role for database operations
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  }
-);
+import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, SUBSCRIPTIONS_COLLECTION_ID } from '@/services/appwrite-collections';
 
 // Verify Razorpay webhook signature
 const verifySignature = (body, signature) => {
@@ -30,7 +19,7 @@ export async function POST(request) {
     console.log('Environment check:');
     console.log('  - RAZORPAY_KEY_SECRET:', !!process.env.RAZORPAY_KEY_SECRET);
     console.log('  - RAZORPAY_WEBHOOK_SECRET:', !!process.env.RAZORPAY_WEBHOOK_SECRET);
-    console.log('  - SUPABASE_URL:', !!process.env.NEXT_PUBLIC_SUPABASE_URL);
+    console.log('  - APPWRITE_PROJECT_ID:', !!process.env.APPWRITE_PROJECT_ID);
 
     const body = await request.json();
     console.log('Request body keys:', Object.keys(body));
@@ -120,15 +109,15 @@ async function handlePaymentVerification(body) {
 
     console.log('Payment signature verified successfully');
 
-    // Check if user exists in the Users table (capital U to match existing schema)
-    const { data: existingUser, error: userError } = await supabase
-      .from('Users')
-      .select('id, email, plan, credits')
-      .eq('email', user_email)
-      .single();
+    // Check if user exists
+    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', user_email),
+      Query.limit(1)
+    ]);
+    const existingUser = userRes.documents[0];
 
-    if (userError || !existingUser) {
-      console.error('User not found:', userError);
+    if (!existingUser) {
+      console.error('User not found, creating new user with Pro plan');
 
       // If user doesn't exist, create them with Pro plan
       console.log('Creating new user with Pro plan');
@@ -156,13 +145,10 @@ async function handlePaymentVerification(body) {
         language: 'en'
       };
 
-      const { data: createdUser, error: createError } = await supabase
-        .from('Users')
-        .insert([newUser])
-        .select()
-        .single();
-
-      if (createError) {
+      let createdUser;
+      try {
+        createdUser = await databases.createDocument(DB_ID, USERS_COLLECTION_ID, ID.unique(), newUser);
+      } catch (createError) {
         console.error('Failed to create new user:', createError);
         return NextResponse.json(
           { error: `Failed to create user: ${createError.message}`, success: false },
@@ -179,9 +165,8 @@ async function handlePaymentVerification(body) {
       });
 
       // Store subscription record for new user
-      const { error: subscriptionError } = await supabase
-        .from('subscriptions')
-        .insert({
+      try {
+        await databases.createDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, ID.unique(), {
           user_email: user_email,
           razorpay_order_id: razorpay_order_id,
           plan_type: 'pro',
@@ -189,8 +174,7 @@ async function handlePaymentVerification(body) {
           currency: 'INR',
           status: 'active'
         });
-
-      if (subscriptionError) {
+      } catch (subscriptionError) {
         console.error('Failed to store subscription for new user:', subscriptionError);
       }
 
@@ -198,7 +182,7 @@ async function handlePaymentVerification(body) {
         success: true,
         message: 'Payment verified and Pro plan activated for new user',
         user: {
-          id: createdUser.id,
+          id: createdUser.$id,
           email: createdUser.email,
           plan: createdUser.plan,
           credits: createdUser.credits
@@ -206,7 +190,7 @@ async function handlePaymentVerification(body) {
       });
     }
 
-    console.log('User found:', { id: existingUser.id, email: existingUser.email, currentPlan: existingUser.plan });
+    console.log('User found:', { id: existingUser.$id, email: existingUser.email, currentPlan: existingUser.plan });
 
     // Calculate subscription dates
     const subscriptionStartDate = new Date();
@@ -219,20 +203,16 @@ async function handlePaymentVerification(body) {
     });
 
     // Update existing user to Pro plan with subscription dates
-    const { data: updatedUser, error: updateError } = await supabase
-      .from('Users')
-      .update({
+    let updatedUser;
+    try {
+      updatedUser = await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, existingUser.$id, {
         plan: 'pro',
         credits: 25000,
         last_monthly_reset: new Date().toISOString().split('T')[0],
         subscription_start_date: subscriptionStartDate.toISOString(),
         subscription_end_date: subscriptionEndDate.toISOString()
-      })
-      .eq('email', user_email)
-      .select()
-      .single();
-
-    if (updateError) {
+      });
+    } catch (updateError) {
       console.error('Failed to update user:', updateError);
       return NextResponse.json(
         { error: `Failed to update user plan: ${updateError.message}`, success: false },
@@ -249,9 +229,8 @@ async function handlePaymentVerification(body) {
     });
 
     // Store subscription record
-    const { error: subscriptionError } = await supabase
-      .from('subscriptions')
-      .insert({
+    try {
+      await databases.createDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, ID.unique(), {
         user_email: user_email,
         razorpay_order_id: razorpay_order_id,
         plan_type: 'pro',
@@ -259,19 +238,17 @@ async function handlePaymentVerification(body) {
         currency: 'INR',
         status: 'active'
       });
-
-    if (subscriptionError) {
+      console.log('Subscription record created successfully');
+    } catch (subscriptionError) {
       console.error('Failed to store subscription:', subscriptionError);
       // Don't fail the payment verification for this
-    } else {
-      console.log('Subscription record created successfully');
     }
 
     return NextResponse.json({
       success: true,
       message: 'Payment verified and Pro plan activated',
       user: {
-        id: updatedUser.id,
+        id: updatedUser.$id,
         email: updatedUser.email,
         plan: updatedUser.plan,
         credits: updatedUser.credits
@@ -342,10 +319,13 @@ async function handlePaymentCaptured(payment) {
 
   // Update subscription status if needed
   if (payment.order_id) {
-    await supabase
-      .from('subscriptions')
-      .update({ status: 'active' })
-      .eq('razorpay_order_id', payment.order_id);
+    const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+      Query.equal('razorpay_order_id', payment.order_id),
+      Query.limit(100)
+    ]);
+    for (const sub of subsRes.documents) {
+      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'active' });
+    }
   }
 }
 
@@ -354,10 +334,13 @@ async function handlePaymentFailed(payment) {
 
   // Update subscription status
   if (payment.order_id) {
-    await supabase
-      .from('subscriptions')
-      .update({ status: 'failed' })
-      .eq('razorpay_order_id', payment.order_id);
+    const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+      Query.equal('razorpay_order_id', payment.order_id),
+      Query.limit(100)
+    ]);
+    for (const sub of subsRes.documents) {
+      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'failed' });
+    }
   }
 }
 
@@ -366,11 +349,11 @@ async function handleSubscriptionCharged(subscription, payment) {
 
   // Reset monthly credits and extend subscription for recurring payments
   if (subscription.id) {
-    const { data: subscriptionRecord } = await supabase
-      .from('subscriptions')
-      .select('user_email')
-      .eq('razorpay_subscription_id', subscription.id)
-      .single();
+    const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+      Query.equal('razorpay_subscription_id', subscription.id),
+      Query.limit(1)
+    ]);
+    const subscriptionRecord = subRes.documents[0];
 
     if (subscriptionRecord) {
       // Calculate new subscription dates for the renewed period
@@ -383,16 +366,19 @@ async function handleSubscriptionCharged(subscription, payment) {
         end: subscriptionEndDate.toISOString()
       });
 
-      await supabase
-        .from('Users')
-        .update({
+      const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.equal('email', subscriptionRecord.user_email),
+        Query.limit(1)
+      ]);
+      if (userRes.documents[0]) {
+        await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, userRes.documents[0].$id, {
           plan: 'pro',
           credits: 25000,
           last_monthly_reset: new Date().toISOString().split('T')[0],
           subscription_start_date: subscriptionStartDate.toISOString(),
           subscription_end_date: subscriptionEndDate.toISOString()
-        })
-        .eq('email', subscriptionRecord.user_email);
+        });
+      }
     }
   }
 }
@@ -401,29 +387,35 @@ async function handleSubscriptionCancelled(subscription) {
   console.log('Subscription cancelled:', subscription.id);
 
   // Downgrade user to free plan
-  const { data: subscriptionRecord } = await supabase
-    .from('subscriptions')
-    .select('user_email')
-    .eq('razorpay_subscription_id', subscription.id)
-    .single();
+  const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+    Query.equal('razorpay_subscription_id', subscription.id),
+    Query.limit(1)
+  ]);
+  const subscriptionRecord = subRes.documents[0];
 
   if (subscriptionRecord) {
     // Don't downgrade arpitariyanm@gmail.com
     if (subscriptionRecord.user_email !== 'arpitariyanm@gmail.com') {
-      await supabase
-        .from('Users')
-        .update({
+      const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.equal('email', subscriptionRecord.user_email),
+        Query.limit(1)
+      ]);
+      if (userRes.documents[0]) {
+        await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, userRes.documents[0].$id, {
           plan: 'free',
           credits: 5000,
           last_monthly_reset: new Date().toISOString().split('T')[0]
-        })
-        .eq('email', subscriptionRecord.user_email);
+        });
+      }
     }
 
     // Update subscription status
-    await supabase
-      .from('subscriptions')
-      .update({ status: 'cancelled' })
-      .eq('razorpay_subscription_id', subscription.id);
+    const allSubRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+      Query.equal('razorpay_subscription_id', subscription.id),
+      Query.limit(100)
+    ]);
+    for (const sub of allSubRes.documents) {
+      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'cancelled' });
+    }
   }
 }

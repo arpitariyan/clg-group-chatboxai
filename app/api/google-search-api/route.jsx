@@ -2,9 +2,12 @@ import axios from "axios";
 import { NextResponse } from "next/server";
 
 export async function POST(req) {
+    let searchInput = '';
     try {
         // console.log('Google Search API called');
-        const { searchInput, searchType } = await req.json();
+        const body = await req.json();
+        searchInput = body?.searchInput || '';
+        const { searchType } = body;
         // console.log('Search request:', { searchInput, searchType });
 
         // Validate required input
@@ -21,7 +24,8 @@ export async function POST(req) {
             process.env.GOOGLE_API_KEY,
             process.env.GOOGLE_API_KEY_2,
             process.env.GOOGLE_API_KEY_3,
-            process.env.GOOGLE_API_KEY_4
+            process.env.GOOGLE_API_KEY_4,
+            process.env.GOOGLE_API_KEY_5
         ].filter(key => key); // Remove any undefined keys
 
         const googleCxIds = [

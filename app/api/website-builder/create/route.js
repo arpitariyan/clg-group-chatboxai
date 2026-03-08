@@ -1,10 +1,45 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
-import { enhancePrompt, generateWebsite } from '@/lib/ai-client';
 import { generateProjectName } from '@/lib/website-builder-utils';
+import {
+    createWebsiteConversationMessage,
+    createWebsiteProjectDocument,
+    deductWebsiteCreditsWithLock,
+    normalizeWebsiteProject,
+    refundWebsiteCreditsWithLock
+} from '@/lib/website-builder-server-utils';
+
+const REQUIRED_WEBSITE_BUILDER_ENV = [
+    'OPENROUTER_API_KEY',
+    'APPWRITE_DATABASE_ID',
+    'APPWRITE_PROJECT_ID',
+    'APPWRITE_API_KEY',
+    'APPWRITE_WEBSITE_PROJECTS_COLLECTION_ID',
+    'APPWRITE_WEBSITE_VERSIONS_COLLECTION_ID',
+    'APPWRITE_WEBSITE_CONVERSATIONS_COLLECTION_ID',
+    'APPWRITE_WEBSITE_USER_CREDITS_COLLECTION_ID'
+];
+
+function getMissingWebsiteBuilderEnv() {
+    return REQUIRED_WEBSITE_BUILDER_ENV.filter((key) => {
+        const value = process.env[key];
+        return !value || !String(value).trim();
+    });
+}
 
 export async function POST(request) {
     try {
+        const missingEnv = getMissingWebsiteBuilderEnv();
+        if (missingEnv.length > 0) {
+            return NextResponse.json(
+                {
+                    error: 'Website Builder is not configured on the server',
+                    details: `Missing environment variables: ${missingEnv.join(', ')}`,
+                    missingEnv
+                },
+                { status: 500 }
+            );
+        }
+
         const { prompt, userEmail } = await request.json();
 
         if (!prompt || !prompt.trim()) {
@@ -23,18 +58,8 @@ export async function POST(request) {
 
         // Check and deduct credits before creating project
         try {
-            const { data: deductResult, error: deductError } = await supabase
-                .rpc('deduct_website_credits', {
-                    p_user_email: userEmail,
-                    p_amount: 1,
-                    p_description: 'Create new website project'
-                });
+            const result = await deductWebsiteCreditsWithLock(userEmail, 1);
 
-            if (deductError) {
-                throw new Error(deductError.message);
-            }
-
-            const result = deductResult[0];
             if (!result.success) {
                 return NextResponse.json(
                     {
@@ -46,7 +71,7 @@ export async function POST(request) {
                             total: result.total_credits
                         }
                     },
-                    { status: 402 } // Payment Required status code
+                    { status: 402 }
                 );
             }
         } catch (creditError) {
@@ -60,146 +85,41 @@ export async function POST(request) {
         // Generate project name from prompt
         const projectName = generateProjectName(prompt);
 
-        // Step 1: Enhance the prompt
-        // console.log('Enhancing prompt...');
-        const enhancedPrompt = await enhancePrompt(prompt);
-        // console.log('Enhanced prompt:', enhancedPrompt);
-
-        // Step 2: Create project record
-        const { data: project, error: projectError } = await supabase
-            .from('website_projects')
-            .insert([
-                {
-                    user_email: userEmail,
-                    project_name: projectName,
-                    original_prompt: prompt,
-                    enhanced_prompt: enhancedPrompt,
-                    current_code: null, // Will be generated next
-                    is_published: false
-                }
-            ])
-            .select()
-            .single();
-
-        if (projectError) {
+        // Step 1: Create project record quickly so user is navigated immediately.
+        // Prompt enhancement and generation happen after page opens.
+        let project;
+        try {
+            project = await createWebsiteProjectDocument({
+                userEmail,
+                projectName,
+                originalPrompt: prompt,
+                enhancedPrompt: prompt
+            });
+        } catch (projectError) {
             console.error('Error creating project:', projectError);
+            await refundWebsiteCreditsWithLock(userEmail, 1);
             return NextResponse.json(
                 { error: 'Failed to create project', details: projectError.message },
                 { status: 500 }
             );
         }
 
-        // Step 3: Add conversation messages
-        // User's original prompt
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: project.id,
-                role: 'user',
-                content: prompt,
-                created_at: new Date().toISOString()
-            }
-        ]);
+        // Step 2: Add conversation messages (best-effort, should not block project creation)
+        await createWebsiteConversationMessage(project.$id, 'user', prompt);
+        await createWebsiteConversationMessage(project.$id, 'assistant', 'Project created. Analyzing your prompt...');
+        await createWebsiteConversationMessage(project.$id, 'assistant', 'Now generating your website...');
 
-        // Assistant's enhancement confirmation
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: project.id,
-                role: 'assistant',
-                content: `I've enhanced your prompt to: "${enhancedPrompt}"`,
-                created_at: new Date().toISOString()
-            }
-        ]);
-
-        // Assistant's generation start message
-        await supabase.from('website_conversations').insert([
-            {
-                project_id: project.id,
-                role: 'assistant',
-                content: 'Now generating your website...',
-                created_at: new Date().toISOString()
-            }
-        ]);
-
-        // Step 4: Start website generation in background
-        // Don't wait for this to complete - let it run asynchronously
-        // User will see LoaderSteps and poll for updates
-        (async () => {
-            try {
-                // console.log(`[Background] Starting generation for project ${project.id}`);
-
-                // Import and call generation function directly (no fetch timeout)
-                const { generateWebsite } = await import('@/lib/ai-client');
-                const { validateHTML } = await import('@/lib/website-builder-utils');
-
-                // Generate the code
-                const generatedCode = await generateWebsite(enhancedPrompt);
-                // console.log(`[Background] Code generated for project ${project.id}`);
-
-                // Validate
-                const validation = validateHTML(generatedCode);
-                if (!validation.isValid) {
-                    console.warn('[Background] Generated code has validation warnings:', validation.errors);
-                }
-
-                // Create version
-                const { data: version, error: versionError } = await supabase
-                    .from('website_versions')
-                    .insert([{ project_id: project.id, code: generatedCode }])
-                    .select()
-                    .single();
-
-                if (versionError) {
-                    console.error('[Background] Error creating version:', versionError);
-                    return;
-                }
-
-                // Update project
-                const { error: updateError } = await supabase
-                    .from('website_projects')
-                    .update({
-                        current_code: generatedCode,
-                        current_version_id: version.id,
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('id', project.id);
-
-                if (updateError) {
-                    console.error('[Background] Error updating project:', updateError);
-                    return;
-                }
-
-                // Add success message to conversation
-                await supabase.from('website_conversations').insert([{
-                    project_id: project.id,
-                    role: 'assistant',
-                    content: "I've created your website! You can see it in the preview panel. Feel free to request any changes.",
-                    created_at: new Date().toISOString()
-                }]);
-
-                // console.log(`✅ [Background] Website generated successfully for project ${project.id}`);
-
-            } catch (error) {
-                console.error('❌ [Background] Generation error:', error.message);
-
-                // Add error message to conversation
-                try {
-                    await supabase.from('website_conversations').insert([{
-                        project_id: project.id,
-                        role: 'assistant',
-                        content: `Sorry, I encountered an error generating your website: ${error.message}. Please try again.`,
-                        created_at: new Date().toISOString()
-                    }]);
-                } catch (convError) {
-                    console.error('[Background] Failed to save error message:', convError);
-                }
-            }
-        })();
+        const normalized = normalizeWebsiteProject(project);
 
         return NextResponse.json({
             success: true,
-            projectId: project.id,
+            projectId: normalized.id,
+            libId: normalized.id,
             projectName: projectName,
-            message: 'Project created successfully. Website generation started.'
+            message: 'Project created successfully. Opening builder now...',
+            generated: false,
+            generationTimeout: false,
+            project: normalized
         });
 
     } catch (error) {

@@ -116,9 +116,9 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
     const getDeviceDimensions = () => {
         switch (device) {
             case 'phone':
-                return 'max-w-[375px] h-[667px]'
+                return 'w-full max-w-[375px] h-[min(667px,calc(100vh-11.5rem))]'
             case 'tablet':
-                return 'max-w-[768px] h-[1024px]'
+                return 'w-full max-w-[768px] h-[min(1024px,calc(100vh-11.5rem))]'
             case 'desktop':
             default:
                 return 'w-full h-full'
@@ -144,8 +144,8 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
     }
 
     return (
-        <div className="w-full h-full flex items-center justify-center bg-gray-900 overflow-hidden p-4 dark:bg-[oklch(0.3092_0_0)] relative">
-            <div className={`bg-white rounded-lg shadow-2xl overflow-hidden transition-all ${getDeviceDimensions()}`}>
+        <div className="w-full h-full flex items-center justify-center bg-gray-900 overflow-hidden p-2 md:p-4 dark:bg-[oklch(0.3092_0_0)] relative">
+            <div className={`bg-white rounded-lg shadow-2xl overflow-hidden transition-all max-h-full ${getDeviceDimensions()}`}>
                 <iframe
                     ref={iframeRef}
                     title="Website Preview"

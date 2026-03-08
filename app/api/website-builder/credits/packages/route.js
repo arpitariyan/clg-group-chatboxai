@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { WEBSITE_CREDIT_PACKAGES_COLLECTION_ID } from '@/services/appwrite-collections';
+import {
+    getCanonicalWebsiteCreditPackages,
+    normalizeWebsiteCreditPackage,
+} from '@/lib/website-credit-packages';
 
 /**
  * GET /api/website-builder/credits/packages
@@ -7,28 +12,43 @@ import { supabase } from '@/services/supabase';
  */
 export async function GET() {
     try {
-        const { data: packages, error } = await supabase
-            .from('website_credit_packages')
-            .select('*')
-            .eq('is_active', true)
-            .order('sort_order', { ascending: true });
-
-        if (error) {
-            console.error('Error fetching credit packages:', error);
-            return NextResponse.json(
-                { error: 'Failed to fetch credit packages', details: error.message },
-                { status: 500 }
-            );
+        const canonicalPackages = getCanonicalWebsiteCreditPackages();
+        let res;
+        try {
+            res = await databases.listDocuments(DB_ID, WEBSITE_CREDIT_PACKAGES_COLLECTION_ID, [
+                Query.equal('is_active', true),
+                Query.orderAsc('sort_order'),
+                Query.limit(100)
+            ]);
+        } catch {
+            // Fallback for schema variants missing one or more queryable attributes.
+            res = await databases.listDocuments(DB_ID, WEBSITE_CREDIT_PACKAGES_COLLECTION_ID, [
+                Query.limit(200)
+            ]);
         }
+
+        const normalizedPackages = (res?.documents || [])
+            .map(normalizeWebsiteCreditPackage)
+            .filter((pkg) => pkg.isActive && pkg.credits > 0 && pkg.priceInr > 0)
+            .sort((a, b) => a.sortOrder - b.sortOrder);
+
+        const packageByCredits = new Map(normalizedPackages.map((pkg) => [pkg.credits, pkg]));
+
+        // Always return the required catalog; use DB IDs when matching records exist.
+        const finalPackages = canonicalPackages.map((pkg) => {
+            const dbMatch = packageByCredits.get(pkg.credits);
+            if (!dbMatch) return pkg;
+
+            return {
+                ...pkg,
+                id: dbMatch.id,
+                displayName: dbMatch.displayName || pkg.displayName,
+            };
+        });
 
         return NextResponse.json({
             success: true,
-            packages: packages.map(pkg => ({
-                id: pkg.id,
-                credits: pkg.credits,
-                priceInr: pkg.price_inr,
-                displayName: pkg.display_name
-            }))
+            packages: finalPackages
         });
 
     } catch (error) {

@@ -1,4 +1,5 @@
-import { supabase } from "@/services/supabase";
+import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
+import { USERS_COLLECTION_ID, CHATS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID, SUBSCRIPTIONS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { inngest } from "./client";
 import { resolveModel } from "@/services/Shared";
 
@@ -26,15 +27,17 @@ export const checkExpiredSubscriptions = inngest.createFunction(
 
       try {
         // Get all users with expired pro subscriptions (except the special account)
-        const { data: expiredUsers, error: fetchError } = await supabase
-          .from('Users')
-          .select('email, plan, subscription_end_date, credits')
-          .eq('plan', 'pro')
-          .neq('email', 'arpitariyanm@gmail.com') // Never downgrade special account
-          .not('subscription_end_date', 'is', null)
-          .lte('subscription_end_date', new Date().toISOString());
-
-        if (fetchError) {
+        let expiredUsers;
+        try {
+          const expiredUsersRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+            Query.equal('plan', 'pro'),
+            Query.notEqual('email', 'arpitariyanm@gmail.com'), // Never downgrade special account
+            Query.isNotNull('subscription_end_date'),
+            Query.lessThanEqual('subscription_end_date', new Date().toISOString()),
+            Query.limit(100)
+          ]);
+          expiredUsers = expiredUsersRes.documents;
+        } catch (fetchError) {
           console.error('❌ Error fetching expired users:', fetchError);
           throw new Error(`Database query failed: ${fetchError.message}`);
         }
@@ -61,19 +64,15 @@ export const checkExpiredSubscriptions = inngest.createFunction(
             // console.log(`⬇️ Downgrading user: ${user.email}`);
 
             // Update the user to free plan
-            const { data: updatedUser, error: updateError } = await supabase
-              .from('Users')
-              .update({
+            let updatedUser;
+            try {
+              updatedUser = await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
                 plan: 'free',
                 credits: 5000,
                 last_monthly_reset: new Date().toISOString().split('T')[0]
                 // Note: We keep subscription_start_date and subscription_end_date for historical reference
-              })
-              .eq('email', user.email)
-              .select('email, plan, credits')
-              .single();
-
-            if (updateError) {
+              });
+            } catch (updateError) {
               console.error(`❌ Failed to downgrade ${user.email}:`, updateError);
               errors.push({ email: user.email, error: updateError.message });
               continue;
@@ -83,30 +82,30 @@ export const checkExpiredSubscriptions = inngest.createFunction(
             // console.log(`✅ Successfully downgraded ${user.email} to free plan`);
 
             // Log the downgrade action for auditing
-            const { error: logError } = await supabase
-              .from('usage_logs')
-              .insert({
+            try {
+              await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
                 user_email: user.email,
                 model: 'subscription_system',
                 operation_type: 'auto_downgrade',
                 credits_consumed: 0,
-                credits_remaining: 5000,
-                created_at: new Date().toISOString()
+                credits_remaining: 5000
               });
-
-            if (logError) {
+            } catch (logError) {
               console.warn(`⚠️ Failed to log downgrade for ${user.email}:`, logError.message);
               // Don't fail the entire process for logging errors
             }
 
             // Update subscriptions table to mark as expired
-            const { error: subError } = await supabase
-              .from('subscriptions')
-              .update({ status: 'expired' })
-              .eq('user_email', user.email)
-              .eq('status', 'active');
-
-            if (subError) {
+            try {
+              const activeSubs = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+                Query.equal('user_email', user.email),
+                Query.equal('status', 'active'),
+                Query.limit(100)
+              ]);
+              for (const sub of activeSubs.documents) {
+                await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'expired' });
+              }
+            } catch (subError) {
               console.warn(`⚠️ Failed to update subscription status for ${user.email}:`, subError.message);
               // Don't fail the entire process for subscription table errors
             }
@@ -164,15 +163,17 @@ export const manualSubscriptionCheck = inngest.createFunction(
     const result = await step.run('manual-check-and-downgrade', async () => {
       try {
         // Reuse the same logic as the daily check
-        const { data: expiredUsers, error: fetchError } = await supabase
-          .from('Users')
-          .select('email, plan, subscription_end_date, credits')
-          .eq('plan', 'pro')
-          .neq('email', 'arpitariyanm@gmail.com')
-          .not('subscription_end_date', 'is', null)
-          .lte('subscription_end_date', new Date().toISOString());
-
-        if (fetchError) {
+        let expiredUsers;
+        try {
+          const expiredUsersRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+            Query.equal('plan', 'pro'),
+            Query.notEqual('email', 'arpitariyanm@gmail.com'),
+            Query.isNotNull('subscription_end_date'),
+            Query.lessThanEqual('subscription_end_date', new Date().toISOString()),
+            Query.limit(100)
+          ]);
+          expiredUsers = expiredUsersRes.documents;
+        } catch (fetchError) {
           throw new Error(`Database query failed: ${fetchError.message}`);
         }
 
@@ -193,18 +194,14 @@ export const manualSubscriptionCheck = inngest.createFunction(
 
         for (const user of expiredUsers) {
           try {
-            const { data: updatedUser, error: updateError } = await supabase
-              .from('Users')
-              .update({
+            let updatedUser;
+            try {
+              updatedUser = await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
                 plan: 'free',
                 credits: 5000,
                 last_monthly_reset: new Date().toISOString().split('T')[0]
-              })
-              .eq('email', user.email)
-              .select('email, plan, credits')
-              .single();
-
-            if (updateError) {
+              });
+            } catch (updateError) {
               errors.push({ email: user.email, error: updateError.message });
               continue;
             }
@@ -212,16 +209,17 @@ export const manualSubscriptionCheck = inngest.createFunction(
             downgradedUsers.push(updatedUser);
 
             // Log the manual downgrade
-            await supabase
-              .from('usage_logs')
-              .insert({
+            try {
+              await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
                 user_email: user.email,
                 model: 'subscription_system',
                 operation_type: 'manual_downgrade',
                 credits_consumed: 0,
-                credits_remaining: 5000,
-                created_at: new Date().toISOString()
+                credits_remaining: 5000
               });
+            } catch (logError) {
+              console.warn(`⚠️ Failed to log manual downgrade for ${user.email}:`, logError.message);
+            }
 
           } catch (userError) {
             errors.push({ email: user.email, error: userError.message });
@@ -255,125 +253,173 @@ function getOpenRouterApiKeys() {
     process.env.OPENROUTER_API_KEY_2,
     process.env.OPENROUTER_API_KEY_3,
     process.env.OPENROUTER_API_KEY_4,
-    process.env.OPENROUTER_API_KEY_5
+    process.env.OPENROUTER_API_KEY_5,
+    process.env.NEXT_PUBLIC_OPENROUTER_API_KEY
   ].filter(key => key && key.trim() !== ''); // Remove empty/undefined keys
 
   return keys;
 }
 
+function getOpenRouterModelCandidates(model) {
+  const candidates = [];
+
+  const pushCandidate = (value) => {
+    if (!value) return;
+    if (!candidates.includes(value)) candidates.push(value);
+  };
+
+  pushCandidate(model);
+
+  if (typeof model === 'string' && model.endsWith(':free')) {
+    pushCandidate(model.replace(':free', ''));
+  }
+
+  const modelFallbackMap = {
+    'z-ai/glm-4.5-air:free': [
+      'qwen/qwen3-coder:free',
+      'qwen/qwen3-4b:free',
+      'google/gemma-3-4b-it:free',
+      'google/gemma-3n-e4b-it:free'
+    ],
+    'meta-llama/llama-4-scout:free': [
+      'z-ai/glm-4.5-air:free',
+      'qwen/qwen3-coder:free',
+      'qwen/qwen3-4b:free',
+      'google/gemma-3-4b-it:free',
+      'google/gemma-3n-e4b-it:free'
+    ],
+    'sourceful/riverflow-v2-fast': [
+      'qwen/qwen3-coder:free',
+      'qwen/qwen3-4b:free',
+      'google/gemma-3-4b-it:free',
+      'google/gemma-3n-e4b-it:free'
+    ],
+    'qwen/qwen3-coder:free': ['qwen/qwen3-coder', 'qwen/qwen3-4b:free', 'google/gemma-3-4b-it:free'],
+    'qwen/qwen3-vl-30b-a3b-thinking': ['qwen/qwen3-32b:free', 'qwen/qwen3-4b:free'],
+  };
+
+  (modelFallbackMap[model] || []).forEach(pushCandidate);
+  return candidates;
+}
+
 // Helper function to call OpenRouter API with automatic key failover
 async function callOpenRouter(model, prompt) {
   const apiKeys = getOpenRouterApiKeys();
+  const modelCandidates = getOpenRouterModelCandidates(model);
 
   if (apiKeys.length === 0) {
     // console.error('❌ No OpenRouter API keys found in environment variables');
     throw new Error('No OpenRouter API keys configured');
   }
 
-  // console.log(`🔄 OpenRouter: Starting API call for model: ${model}, keys available: ${apiKeys.length}`);
   let lastError = null;
 
-  // Try each API key in sequence
-  for (let i = 0; i < apiKeys.length; i++) {
-    const apiKey = apiKeys[i];
-    const keyNumber = i + 1;
+  for (const candidateModel of modelCandidates) {
+    // Try each API key in sequence
+    for (let i = 0; i < apiKeys.length; i++) {
+      const apiKey = apiKeys[i];
+      const keyNumber = i + 1;
 
-    try {
-      // console.log(`🔑 OpenRouter: Trying API key #${keyNumber}/${apiKeys.length} for model ${model}...`);
+      try {
+        // console.log(`🔑 OpenRouter: Trying API key #${keyNumber}/${apiKeys.length} for model ${candidateModel}...`);
 
-      const requestBody = {
-        model: model,
-        messages: [
-          {
-            role: 'user',
-            content: prompt
+        const requestBody = {
+          model: candidateModel,
+          messages: [
+            {
+              role: 'user',
+              content: prompt
+            }
+          ],
+          max_tokens: 2048,
+          temperature: 0.7
+        };
+
+        // console.log(`📤 OpenRouter: Sending request with model: ${candidateModel}, prompt length: ${prompt.length}`);
+
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://chatboxai.com',
+            'X-Title': 'ChatBox AI'
+          },
+          body: JSON.stringify(requestBody)
+        });
+
+        // console.log(`📥 OpenRouter: Response status ${response.status} for key #${keyNumber}`);
+
+        if (response.ok) {
+          try {
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+              throw new Error(`Invalid response type: ${contentType || 'unknown'}`);
+            }
+            const data = await response.json();
+
+            if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+              console.error(`❌ OpenRouter: Invalid response format from API:`, JSON.stringify(data).substring(0, 200));
+              throw new Error(`Invalid response format from OpenRouter for model ${candidateModel}`);
+            }
+
+            const responseText = data.choices[0].message.content;
+            return responseText;
+          } catch (parseError) {
+            console.error(`❌ OpenRouter: Failed to parse response for key #${keyNumber}:`, parseError.message);
+            throw parseError;
           }
-        ],
-        max_tokens: 2048,
-        temperature: 0.7
-      };
-
-      // console.log(`📤 OpenRouter: Sending request with model: ${model}, prompt length: ${prompt.length}`);
-
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://chatboxai.com',
-          'X-Title': 'ChatBox AI'
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      // console.log(`📥 OpenRouter: Response status ${response.status} for key #${keyNumber}`);
-
-      if (response.ok) {
-        try {
-          const contentType = response.headers.get('content-type');
-          if (!contentType || !contentType.includes('application/json')) {
-            throw new Error(`Invalid response type: ${contentType || 'unknown'}`);
-          }
-          const data = await response.json();
-          // console.log(`✅ OpenRouter: Successfully got response from key #${keyNumber}`);
-
-          if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-            console.error(`❌ OpenRouter: Invalid response format from API:`, JSON.stringify(data).substring(0, 200));
-            throw new Error(`Invalid response format from OpenRouter for model ${model}`);
-          }
-
-          const responseText = data.choices[0].message.content;
-          // console.log(`✅ OpenRouter: Got valid response, length: ${responseText.length}`);
-          return responseText;
-        } catch (parseError) {
-          console.error(`❌ OpenRouter: Failed to parse response for key #${keyNumber}:`, parseError.message);
-          throw parseError;
         }
-      }
 
-      // Try to read error response body
-      const errorText = await response.text();
-      // console.log(`❌ OpenRouter: Error response for key #${keyNumber}: ${errorText.substring(0, 300)}`);
+        // Try to read error response body
+        const errorText = await response.text();
+        // console.log(`❌ OpenRouter: Error response for key #${keyNumber}: ${errorText.substring(0, 300)}`);
 
-      // Handle specific error cases
-      if (response.status === 401) {
-        console.warn(`❌ OpenRouter: API key #${keyNumber} invalid/expired for model ${model}`);
-        lastError = new Error(`OpenRouter authentication failed: Invalid API key #${keyNumber}`);
+        // Handle specific error cases
+        if (response.status === 404) {
+          console.warn(`⚠️ OpenRouter model not found: ${candidateModel}. Trying fallback model...`);
+          lastError = new Error(`OpenRouter model not found: ${candidateModel}`);
+          break;
+        }
+
+        if (response.status === 401) {
+          console.warn(`❌ OpenRouter: API key #${keyNumber} invalid/expired for model ${candidateModel}`);
+          lastError = new Error(`OpenRouter authentication failed: Invalid API key #${keyNumber}`);
+          continue;
+        }
+
+        if (response.status === 429) {
+          console.warn(`⏱️ OpenRouter: API key #${keyNumber} rate limited for model ${candidateModel}`);
+          lastError = new Error(`OpenRouter rate limit exceeded with API key #${keyNumber}`);
+          continue;
+        }
+
+        if (response.status === 402 || response.status === 403) {
+          console.warn(`💳 OpenRouter: API key #${keyNumber} insufficient credits/permissions for model ${candidateModel}`);
+          lastError = new Error(`OpenRouter insufficient credits/permissions with API key #${keyNumber}`);
+          continue;
+        }
+
+        if (response.status === 400) {
+          console.warn(`⚠️ OpenRouter: Bad request for key #${keyNumber}. Model might be malformed: ${candidateModel}`);
+          lastError = new Error(`OpenRouter bad request: Invalid model name or request format - ${candidateModel}`);
+          continue;
+        }
+
+        // For other errors, still try next key but log the error
+        console.warn(`⚠️ OpenRouter: API key #${keyNumber} failed with status ${response.status}`);
+        lastError = new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText.substring(0, 120)}`);
+        continue;
+
+      } catch (error) {
+        console.warn(`🔥 OpenRouter: Exception with API key #${keyNumber}:`, error.message);
+        lastError = error;
         continue;
       }
-
-      if (response.status === 429) {
-        console.warn(`⏱️ OpenRouter: API key #${keyNumber} rate limited for model ${model}`);
-        lastError = new Error(`OpenRouter rate limit exceeded with API key #${keyNumber}`);
-        continue;
-      }
-
-      if (response.status === 402 || response.status === 403) {
-        console.warn(`💳 OpenRouter: API key #${keyNumber} insufficient credits/permissions for model ${model}`);
-        lastError = new Error(`OpenRouter insufficient credits/permissions with API key #${keyNumber}`);
-        continue;
-      }
-
-      if (response.status === 400) {
-        console.warn(`⚠️ OpenRouter: Bad request for key #${keyNumber}. Model might be incorrect or malformed: ${model}`);
-        lastError = new Error(`OpenRouter bad request: Invalid model name or request format - ${model}`);
-        continue;
-      }
-
-      // For other errors, still try next key but log the error
-      console.warn(`⚠️ OpenRouter: API key #${keyNumber} failed with status ${response.status}`);
-      lastError = new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
-      continue;
-
-    } catch (error) {
-      console.warn(`🔥 OpenRouter: Exception with API key #${keyNumber}:`, error.message);
-      lastError = error;
-      continue;
     }
   }
 
-  // If all keys failed, throw the last error
-  console.error(`❌ All ${apiKeys.length} OpenRouter API keys failed for model ${model}`);
+  console.error(`❌ OpenRouter failed for all candidates of model ${model}`);
   throw lastError || new Error(`All OpenRouter API keys failed for model ${model}`);
 }
 
@@ -937,7 +983,8 @@ async function callBestOption(prompt) {
 
   const openRouterModels = [
     // 'deepseek/deepseek-chat-v3.1:free',
-    'openai/gpt-oss-20b:free',
+    'z-ai/glm-4.5-air:free',
+    'meta-llama/llama-4-scout:free',
     'qwen/qwen3-coder:free',
     'google/gemma-3n-e2b-it:free',
     'qwen/qwen3-4b:free',
@@ -956,7 +1003,24 @@ async function callBestOption(prompt) {
     }
   }
 
-  throw new Error('All AI models failed to respond. Please try again later.');
+  const a4fModels = [
+    'provider-6/qwen3-32b',
+    'provider-8/llama-4-scout',
+    'provider-5/gemini-2.5-flash-lite',
+  ];
+
+  for (const model of a4fModels) {
+    try {
+      const result = await callA4F(model, prompt);
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  return `I’m temporarily unable to reach AI providers right now due to API quota/key issues. Please try again in a few minutes.`;
 }
 
 export const llmModel = inngest.createFunction(
@@ -973,10 +1037,7 @@ export const llmModel = inngest.createFunction(
         console.error('❌', error);
 
         try {
-          await supabase
-            .from('Chats')
-            .update({ aiResp: `Error: ${error}` })
-            .eq('id', recordId);
+          await databases.updateDocument(DB_ID, CHATS_COLLECTION_ID, recordId, { aiResp: `Error: ${error}` });
         } catch (dbError) {
           console.error('❌ Failed to save error to database:', dbError);
         }
@@ -1044,7 +1105,22 @@ Provide a well-structured, informative response.`;
             } else if (actualModel.provider === 'google') {
               return await callGemini(directPrompt);
             } else if (actualModel.provider === 'openrouter') {
-              return await callOpenRouter(actualModel.modelApi, directPrompt);
+              try {
+                return await callOpenRouter(actualModel.modelApi, directPrompt);
+              } catch (openRouterError) {
+                console.warn(`⚠️ OpenRouter model ${actualModel.modelApi} failed, falling back to Google Gemini:`, openRouterError.message);
+                try {
+                  return await callGemini(directPrompt);
+                } catch (geminiError) {
+                  console.warn('⚠️ Gemini fallback failed, trying A4F fallback:', geminiError.message);
+                  try {
+                    return await callA4F('provider-6/qwen3-32b', directPrompt);
+                  } catch (a4fError) {
+                    console.warn('⚠️ A4F fallback failed, using best-option fallback:', a4fError.message);
+                    return await callBestOption(directPrompt);
+                  }
+                }
+              }
             } else {
               // Fallback to best option
               return await callBestOption(directPrompt);
@@ -1067,7 +1143,22 @@ Please summarize and provide detailed information about the topic in markdown fo
             } else if (actualModel.provider === 'google') {
               return await callGemini(prompt);
             } else if (actualModel.provider === 'openrouter') {
-              return await callOpenRouter(actualModel.modelApi, prompt);
+              try {
+                return await callOpenRouter(actualModel.modelApi, prompt);
+              } catch (openRouterError) {
+                console.warn(`⚠️ OpenRouter model ${actualModel.modelApi} failed, falling back to Google Gemini:`, openRouterError.message);
+                try {
+                  return await callGemini(prompt);
+                } catch (geminiError) {
+                  console.warn('⚠️ Gemini fallback failed, trying A4F fallback:', geminiError.message);
+                  try {
+                    return await callA4F('provider-6/qwen3-32b', prompt);
+                  } catch (a4fError) {
+                    console.warn('⚠️ A4F fallback failed, using best-option fallback:', a4fError.message);
+                    return await callBestOption(prompt);
+                  }
+                }
+              }
             } else if (actualModel.provider && actualModel.provider.startsWith('provider-')) {
               // Try A4F with automatic fallback to Gemini on failure
               try {
@@ -1118,17 +1209,14 @@ Please summarize and provide detailed information about the topic in markdown fo
           usedModelName = selectedModel.name;
         }
 
-        const { data, error } = await supabase
-          .from('Chats')
-          .update({
+        let data;
+        try {
+          data = await databases.updateDocument(DB_ID, CHATS_COLLECTION_ID, recordId, {
             aiResp: aiResp,
             usedModel: usedModelName,
             modelApi: modelApi
-          })
-          .eq('id', recordId)
-          .select();
-
-        if (error) {
+          });
+        } catch (error) {
           console.error('❌ Database error:', error);
           throw new Error(`Database update failed: ${error.message}`);
         }
@@ -1162,15 +1250,11 @@ Please summarize and provide detailed information about the topic in markdown fo
           errorMessage = 'Database error occurred. Please try again.';
         }
 
-        const { data, error: dbError } = await supabase
-          .from('Chats')
-          .update({ aiResp: errorMessage })
-          .eq('id', event.data.recordId)
-          .select();
-
-        if (dbError) {
+        let data;
+        try {
+          data = await databases.updateDocument(DB_ID, CHATS_COLLECTION_ID, event.data.recordId, { aiResp: errorMessage });
+        } catch (dbError) {
           console.error('❌ Failed to save error to database:', dbError);
-        } else {
         }
 
         return data;

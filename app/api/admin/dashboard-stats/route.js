@@ -1,69 +1,73 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import {
+  USERS_COLLECTION_ID,
+  IMAGE_GENERATION_COLLECTION_ID,
+  LIBRARY_COLLECTION_ID,
+} from '@/services/appwrite-collections';
 
 export async function GET(request) {
   try {
-    // Get total users count
-    const { count: totalUsers } = await supabase
-      .from('Users')
-      .select('*', { count: 'exact', head: true });
-
-    // Get active users (logged in within last 30 days)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    
-    const { count: activeUsers } = await supabase
-      .from('Users')
-      .select('*', { count: 'exact', head: true })
-      .gte('last_login', thirtyDaysAgo.toISOString());
-
-    // Get pro users count
-    const { count: proUsers } = await supabase
-      .from('Users')
-      .select('*', { count: 'exact', head: true })
-      .eq('plan', 'pro');
-
-    // Get total image generations
-    const { count: totalImageGenerations } = await supabase
-      .from('ImageGeneration')
-      .select('*', { count: 'exact', head: true });
-
-    // Get today's image generations
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
-    const { count: imageGenerationsToday } = await supabase
-      .from('ImageGeneration')
-      .select('*', { count: 'exact', head: true })
-      .gte('created_at', today.toISOString());
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    // Get total searches and research (from Library table)
-    const { count: totalSearches } = await supabase
-      .from('Library')
-      .select('*', { count: 'exact', head: true });
+    // Run all count queries in parallel
+    const [
+      totalUsersRes,
+      activeUsersRes,
+      proUsersRes,
+      totalImageGenRes,
+      imagesTodayRes,
+      totalSearchesRes,
+      searchesTodayRes,
+      recentImagesRes,
+    ] = await Promise.all([
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [Query.limit(1)]),
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.greaterThanEqual('last_login', thirtyDaysAgo.toISOString()),
+        Query.limit(1),
+      ]),
+      databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+        Query.equal('plan', 'pro'),
+        Query.limit(1),
+      ]),
+      databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [Query.limit(1)]),
+      databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+        Query.greaterThanEqual('$createdAt', today.toISOString()),
+        Query.limit(1),
+      ]),
+      databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [Query.limit(1)]),
+      databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
+        Query.greaterThanEqual('$createdAt', today.toISOString()),
+        Query.limit(1),
+      ]),
+      databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+        Query.orderDesc('$createdAt'),
+        Query.limit(5),
+      ]),
+    ]);
 
-    const { count: searchesToday } = await supabase
-      .from('Library')
-      .select('*', { count: 'exact', head: true })
-      .gte('createdAt', today.toISOString());
+    const totalUsers = totalUsersRes.total;
+    const activeUsers = activeUsersRes.total;
+    const proUsers = proUsersRes.total;
+    const totalImageGenerations = totalImageGenRes.total;
+    const imageGenerationsToday = imagesTodayRes.total;
+    const totalSearches = totalSearchesRes.total;
+    const searchesToday = searchesTodayRes.total;
+    const recentImages = recentImagesRes.documents;
 
     // Calculate pro percentage
     const proPercentage = totalUsers > 0 ? Math.round((proUsers / totalUsers) * 100) : 0;
 
-    // Get recent activity (last 5 activities)
-    const { data: recentImages } = await supabase
-      .from('ImageGeneration')
-      .select('userEmail, prompt, created_at')
-      .order('created_at', { ascending: false })
-      .limit(5);
-
-    const recentActivity = recentImages?.map(item => ({
+    const recentActivity = recentImages.map(item => ({
       title: 'Image Generated',
       description: `${item.userEmail} generated an image`,
-      time: new Date(item.created_at).toLocaleString(),
+      time: new Date(item.$createdAt).toLocaleString(),
       bgColor: 'bg-purple-500/10',
       icon: '🎨',
-    })) || [];
+    }));
 
     return NextResponse.json({
       totalUsers: totalUsers || 0,

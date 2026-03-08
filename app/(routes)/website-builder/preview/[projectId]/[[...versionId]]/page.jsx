@@ -1,9 +1,9 @@
 'use client'
 
 import React, { useEffect, useState, useRef } from 'react'
-import { useParams } from 'next/navigation'
 import { Loader2, X } from 'lucide-react'
-import { toast } from 'react-toastify'
+import { toast } from '@/lib/alert'
+import { useAuth } from '@/contexts/AuthContext'
 
 export default function PreviewPage({ params: paramsPromise }) {
     const [params, setParams] = useState(null)
@@ -13,13 +13,14 @@ export default function PreviewPage({ params: paramsPromise }) {
     const [loading, setLoading] = useState(true)
     const [code, setCode] = useState(null)
     const [error, setError] = useState(null)
+    const { currentUser } = useAuth()
 
     // Unwrap params Promise
     useEffect(() => {
         paramsPromise.then((p) => {
             setParams(p)
             setProjectId(p.projectId)
-            setVersionId(p.versionId)
+            setVersionId(Array.isArray(p.versionId) ? p.versionId[0] : p.versionId)
         })
     }, [paramsPromise])
 
@@ -28,7 +29,10 @@ export default function PreviewPage({ params: paramsPromise }) {
 
         const fetchCode = async () => {
             try {
-                const response = await fetch(`/api/website-builder/project/${projectId}`)
+                const ownerQuery = currentUser?.email
+                    ? `?userEmail=${encodeURIComponent(currentUser.email)}`
+                    : ''
+                const response = await fetch(`/api/website-builder/project/${projectId}${ownerQuery}`)
                 const data = await response.json()
 
                 if (!response.ok) {
@@ -36,8 +40,8 @@ export default function PreviewPage({ params: paramsPromise }) {
                 }
 
                 // If versionId is specified, find that version's code
-                if (versionId && data.versions) {
-                    const version = data.versions.find(v => v.id === versionId)
+                if (versionId && data.project?.versions) {
+                    const version = data.project.versions.find(v => (v.id || v.$id) === versionId)
                     if (version) {
                         setCode(version.code)
                     } else {
@@ -57,7 +61,7 @@ export default function PreviewPage({ params: paramsPromise }) {
         }
 
         fetchCode()
-    }, [projectId, versionId])
+    }, [projectId, versionId, currentUser?.email])
 
     useEffect(() => {
         if (code && iframeRef.current) {

@@ -20,6 +20,7 @@ const PackagesModal = ({ isOpen, onClose }) => {
   
   // Destructure with fallback
   const { 
+    userData = null,
     plan = 'free', 
     isSpecialAccount = false, 
     refreshUserData = async () => {
@@ -190,7 +191,7 @@ const PackagesModal = ({ isOpen, onClose }) => {
           }
         },
         prefill: {
-          name: currentUser.displayName || currentUser.email,
+          name: userData?.name || currentUser.displayName || currentUser.email,
           email: currentUser.email,
         },
         theme: {

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/services/supabase';
+import { deductWebsiteCreditsWithLock } from '@/lib/website-builder-server-utils';
 
 /**
  * POST /api/website-builder/credits/deduct
@@ -7,7 +7,7 @@ import { supabase } from '@/services/supabase';
  */
 export async function POST(request) {
     try {
-        const { email, amount, description } = await request.json();
+        const { email, amount } = await request.json();
 
         if (!email || !amount) {
             return NextResponse.json(
@@ -23,28 +23,12 @@ export async function POST(request) {
             );
         }
 
-        // Deduct credits using the database function
-        const { data: result, error: deductError } = await supabase
-            .rpc('deduct_website_credits', {
-                p_user_email: email,
-                p_amount: amount,
-                p_description: description || 'Website builder operation'
-            });
-
-        if (deductError) {
-            console.error('Error deducting credits:', deductError);
-            return NextResponse.json(
-                { error: 'Failed to deduct credits', details: deductError.message },
-                { status: 500 }
-            );
-        }
-
-        const deductResult = result[0];
+        const deductResult = await deductWebsiteCreditsWithLock(email, amount);
 
         if (!deductResult.success) {
             return NextResponse.json(
                 {
-                    error: deductResult.message,
+                    error: deductResult.error || 'Insufficient credits',
                     credits: {
                         weekly: deductResult.weekly_credits,
                         purchased: deductResult.purchased_credits,

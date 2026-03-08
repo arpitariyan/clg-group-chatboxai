@@ -2,9 +2,9 @@
 
 import React, { useRef, useState } from 'react'
 import { Bot, ChevronDown, Eye, Loader2, Send, User } from 'lucide-react'
-import { toast } from 'react-toastify'
+import { toast } from '@/lib/alert'
 
-export default function BuilderSidebar({ project, isGenerating, onRevision }) {
+export default function BuilderSidebar({ project, isGenerating, onRevision, userEmail }) {
     const messageRef = useRef(null)
     const [input, setInput] = useState('')
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -16,8 +16,10 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
 
         setIsSubmitting(true)
         try {
-            await onRevision(input)
-            setInput('')
+            const shouldClear = await onRevision(input)
+            if (shouldClear !== false) {
+                setInput('')
+            }
         } catch (error) {
             console.error('Error submitting revision:', error)
             toast.error('Failed to submit revision')
@@ -31,7 +33,12 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
             const confirm = window.confirm('Are you sure you want to rollback to this version?')
             if (!confirm) return
 
-            const response = await fetch(`/api/website-builder/rollback/${project.id}/${versionId}`)
+            if (!userEmail) {
+                toast.error('Please sign in to rollback versions')
+                return
+            }
+
+            const response = await fetch(`/api/website-builder/rollback/${project.id}/${versionId}?userEmail=${encodeURIComponent(userEmail)}`)
             
             const contentType = response.headers.get('content-type')
             if (!contentType || !contentType.includes('application/json')) {
@@ -77,7 +84,11 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
     const timeline = [
         ...(project.conversations || []).map(c => ({ ...c, type: 'message' })),
         ...(project.versions || []).map(v => ({ ...v, type: 'version' }))
-    ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    ].sort((a, b) => {
+        const aTime = new Date(a.created_at || a.$createdAt || 0).getTime()
+        const bTime = new Date(b.created_at || b.$createdAt || 0).getTime()
+        return aTime - bTime
+    })
 
     React.useEffect(() => {
         if (messageRef.current) {
@@ -86,14 +97,14 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
     }, [timeline.length, isGenerating])
 
     return (
-        <div className="h-full w-full sm:max-w-sm bg-gray-900 border-gray-800 transition-all overflow-hidden dark:bg-[oklch(0.2478_0_0)]">
+        <div className="h-full w-full bg-gray-900 border-gray-800 transition-all overflow-hidden dark:bg-[oklch(0.2478_0_0)]">
             <div className="flex flex-col h-full">
                 {/* Messages container */}
-                <div className="flex-1 overflow-y-auto no-scrollbar px-3 flex flex-col gap-4 pt-4">
+            <div className="flex-1 overflow-y-auto no-scrollbar px-2.5 sm:px-3 flex flex-col gap-4 pt-4">
                     {timeline.map((item, index) => {
                         if (item.type === 'message') {
                             const isUser = item.role === 'user'
-                            const messageId = item.id || index
+                            const messageId = item.id || item.$id || index
                             const isExpanded = expandedMessages.get(messageId) || false
                             const lineCount = countLines(item.content)
                             const shouldTruncate = lineCount > 2 && !isExpanded
@@ -109,7 +120,7 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
                                                 <Bot className="size-5 text-white" />
                                             </div>
                                         )}
-                                        <div className={`max-w-[80%] p-2 px-4 dark:bg-[oklch(0.3092_0_0)] rounded-2xl shadow-sm text-sm leading-relaxed whitespace-pre-wrap ${isUser ? 'dark:bg-[oklch(0.3092_0_0)] from-indigo-500 to-indigo-600 text-white rounded-tr-none' : 'rounded-tl-none bg-gray-800 text-gray-100'}`}>
+                                        <div className={`max-w-[86%] sm:max-w-[80%] p-2 px-3 sm:px-4 dark:bg-[oklch(0.3092_0_0)] rounded-2xl shadow-sm text-sm leading-relaxed wrap-break-word whitespace-pre-wrap ${isUser ? 'dark:bg-[oklch(0.3092_0_0)] from-indigo-500 to-indigo-600 text-white rounded-tr-none' : 'rounded-tl-none bg-gray-800 text-gray-100'}`}>
                                             {displayContent}
                                         </div>
                                         {isUser && (
@@ -119,7 +130,7 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
                                         )}
                                     </div>
                                     {lineCount > 2 && (
-                                        <div className={`flex ${isUser ? 'justify-end pr-11' : 'justify-start pl-11'}`}>
+                                        <div className={`flex ${isUser ? 'justify-end pr-2 sm:pr-11' : 'justify-start pl-2 sm:pl-11'}`}>
                                             <button
                                                 onClick={() => toggleMessageExpansion(messageId)}
                                                 className="text-xs cursor-pointer text-gray-400 hover:text-indigo-400 transition-colors flex items-center gap-1"
@@ -134,26 +145,26 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
                         } else {
                             // Version marker
                             return (
-                                <div key={item.id || index} className="w-4/5 mx-auto my-2 p-3 rounded-xl bg-gray-800 text-gray-100 shadow flex flex-col gap-2 dark:bg-[oklch(0.3092_0_0)]">
+                                <div key={item.id || item.$id || index} className="w-4/5 mx-auto my-2 p-3 rounded-xl bg-gray-800 text-gray-100 shadow flex flex-col gap-2 dark:bg-[oklch(0.3092_0_0)]">
                                     <div className="text-xs font-medium">
                                         Code updated <br />
                                         <span className="text-gray-500 text-xs font-normal">
-                                            {new Date(item.created_at).toLocaleString()}
+                                            {new Date(item.created_at || item.$createdAt).toLocaleString()}
                                         </span>
                                     </div>
                                     <div className="flex items-center justify-between">
-                                        {project.current_version_id === item.id ? (
+                                        {project.current_version_id === (item.id || item.$id) ? (
                                             <button className="px-3 py-1 rounded-md text-xs bg-gray-700 cursor-default dark:bg-[oklch(0.2478_0_0)]">Current version</button>
                                         ) : (
                                             <button
-                                                onClick={() => handleRollback(item.id)}
+                                                onClick={() => handleRollback(item.id || item.$id)}
                                                 className="px-3 py-1 rounded-md cursor-pointer text-xs bg-indigo-500 hover:bg-indigo-600 text-white transition-colors"
                                             >
                                                 Roll back to this version
                                             </button>
                                         )}
                                         <button
-                                            onClick={() => window.open(`/website-builder/preview/${project.id}/${item.id}`, '_blank')}
+                                            onClick={() => window.open(`/website-builder/preview/${project.id}/${item.id || item.$id}`, '_blank')}
                                             className="p-1 bg-gray-700 hover:bg-indigo-500 transition-colors rounded dark:bg-[oklch(0.2478_0_0)] cursor-pointer"
                                         >
                                             <Eye className="size-5" />
@@ -179,20 +190,20 @@ export default function BuilderSidebar({ project, isGenerating, onRevision }) {
                 </div>
 
                 {/* Input area */}
-                <form onSubmit={handleSubmit} className="m-3 relative ">
-                    <div className="flex items-center gap-2">
+                <form onSubmit={handleSubmit} className="m-2.5 sm:m-3 relative">
+                    <div className="flex flex-col sm:flex-row sm:items-end gap-2">
                         <textarea
                             onChange={(e) => setInput(e.target.value)}
                             value={input}
-                            rows={4}
+                            rows={5}
                             placeholder="Describe changes you want to make..."
-                            className="flex-1 p-3 rounded-xl resize-none text-sm outline-none ring ring-gray-700 focus:ring-indigo-500 dark:bg-[oklch(0.3092_0_0)] text-gray-100 placeholder-gray-400 transition-all"
+                            className="flex-1 p-3 rounded-xl resize-none text-sm sm:text-base outline-none ring ring-gray-700 focus:ring-indigo-500 dark:bg-[oklch(0.3092_0_0)] text-gray-100 placeholder-gray-400 transition-all min-h-28 sm:min-h-24 sm:pr-12"
                             disabled={isGenerating || isSubmitting}
                         />
                         <button
                             type="submit"
                             disabled={isGenerating || isSubmitting || !input.trim()}
-                            className="absolute cursor-pointer bottom-2.5 right-2.5 rounded-full dark:bg-[oklch(0.2478_0_0)] from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white transition-colors disabled:opacity-60"
+                            className="self-end sm:absolute sm:bottom-2.5 sm:right-2.5 rounded-full dark:bg-[oklch(0.2478_0_0)] from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-white transition-colors disabled:opacity-60"
                         >
                             {isSubmitting || isGenerating ? (
                                 <Loader2 className="size-7 p-1.5 animate-spin text-white" />
