@@ -1,5 +1,0 @@
-id,user_email,transaction_type,amount,weekly_credits_before,weekly_credits_after,purchased_credits_before,purchased_credits_after,description,metadata,created_at
-058f6c98-768f-4f36-9e78-26025cc70e75,arpitariyanm@gmail.com,deduct,1,100,99,100,100,Website revision request,,2026-01-18 04:05:34.762261+00
-3c028e96-cc2e-40c3-8e5d-39a0213bf82b,arpitariyanm@gmail.com,weekly_reset,100,,100,,100,Weekly credits auto-reset,,2026-02-12 02:53:13.965931+00
-5f3309ec-40ac-4789-a97e-f719018b8e6c,arpitariyanm@gmail.com,purchase,100,100,100,0,100,Purchased 100 credits - Order: order_S5CWngXysdoVcM,,2026-01-18 03:57:51.096331+00
-de62a495-b2d4-467c-abbd-ed82fb28fd5c,arpitariyanm@gmail.com,deduct,1,100,99,100,100,Website revision request,,2026-02-16 09:55:18.278425+00
