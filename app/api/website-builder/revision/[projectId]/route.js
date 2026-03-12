@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { databases, DB_ID, Query } from '@/services/appwrite-admin';
 import { generateRevision, enhancePrompt } from '@/lib/ai-client';
-import { formatConversation } from '@/lib/website-builder-utils';
+import { formatConversation, validateHTML } from '@/lib/website-builder-utils';
 import {
     createWebsiteConversationMessage,
     createWebsiteVersionDocument,
@@ -17,8 +17,13 @@ import {
 } from '@/services/appwrite-collections';
 
 export async function POST(request, { params }) {
+    let shouldRefundCredit = false;
+    let refundUserEmail = '';
+    let currentProjectId = '';
+
     try {
         const { projectId } = await params;
+        currentProjectId = projectId;
         const { message, userEmail } = await request.json();
 
         if (!message || !message.trim()) {
@@ -80,6 +85,9 @@ export async function POST(request, { params }) {
                     { status: 402 }
                 );
             }
+
+            shouldRefundCredit = true;
+            refundUserEmail = project.user_email;
         } catch (creditError) {
             console.error('Credit check error:', creditError);
             return NextResponse.json(
@@ -115,45 +123,62 @@ export async function POST(request, { params }) {
             formattedHistory
         );
 
-        // Step 8: Create new version
-        let version;
-        try {
-            version = await createWebsiteVersionDocument({
-                projectId,
-                code: revisedCode
-            });
-        } catch (versionError) {
-            console.error('Error creating version:', versionError);
-            await refundWebsiteCreditsWithLock(project.user_email, 1);
-            return NextResponse.json(
-                { error: 'Failed to save revision', details: versionError.message },
-                { status: 500 }
-            );
+        const validation = validateHTML(revisedCode);
+        if (!validation.isValid) {
+            console.error('Generated invalid revision HTML:', validation.errors);
         }
 
+        // Step 8: Create new version
+        const version = await createWebsiteVersionDocument({
+            projectId,
+            code: revisedCode
+        });
+
         // Step 9: Update project
-        try {
-            await updateWebsiteProjectCode(projectId, revisedCode, version.$id);
-        } catch (updateError) {
-            console.error('Error updating project:', updateError);
-            await refundWebsiteCreditsWithLock(project.user_email, 1);
-            return NextResponse.json(
-                { error: 'Failed to update project after revision', details: updateError.message },
-                { status: 500 }
-            );
-        }
+        await updateWebsiteProjectCode(projectId, revisedCode, version.$id);
+
+        const updatedProjectDoc = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId);
+        const updatedProject = normalizeWebsiteProject(updatedProjectDoc);
 
         // Step 10: Add AI success message to conversation
         await createWebsiteConversationMessage(projectId, 'assistant', "I've made the changes to your website! You can now preview it");
 
+        shouldRefundCredit = false;
+
         return NextResponse.json({
             success: true,
             versionId: version.$id,
-            message: 'Website updated successfully'
+            message: 'Website updated successfully',
+            project: updatedProject,
+            validation: {
+                isValid: validation.isValid,
+                errors: validation.errors
+            }
         });
 
     } catch (error) {
         console.error('Error in revision endpoint:', error);
+
+        if (shouldRefundCredit && refundUserEmail) {
+            try {
+                await refundWebsiteCreditsWithLock(refundUserEmail, 1);
+            } catch (refundError) {
+                console.error('Failed to refund revision credit:', refundError);
+            }
+        }
+
+        if (currentProjectId) {
+            try {
+                await createWebsiteConversationMessage(
+                    currentProjectId,
+                    'assistant',
+                    `Sorry, I encountered an error updating your website: ${error.message}`
+                );
+            } catch (conversationError) {
+                console.error('Failed to save revision error message:', conversationError);
+            }
+        }
+
         return NextResponse.json(
             { error: 'Failed to generate revision', details: error.message },
             { status: 500 }

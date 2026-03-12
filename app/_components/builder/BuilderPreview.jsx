@@ -1,12 +1,11 @@
 'use client'
 
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react'
-import { Loader2 } from 'lucide-react'
 import LoaderSteps from './LoaderSteps'
 import EditorPanel from './EditorPanel'
 import { iframeScript } from './iframeScript'
 
-const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', onChangeDetected }, ref) => {
+const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = false, device = 'desktop', onChangeDetected }, ref) => {
     const iframeRef = useRef(null)
     const [previewError, setPreviewError] = useState(null)
     const [selectedElement, setSelectedElement] = useState(null)
@@ -97,6 +96,10 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
     }
 
     useEffect(() => {
+        // Also depends on isRevisionPending and isGenerating so the effect re-fires
+        // when the loading overlay unmounts and the iframe re-enters the DOM.
+        // Without this, switching from LoaderSteps back to the iframe would leave
+        // a blank preview because iframeRef.current was null while code changed.
         if (project?.current_code && iframeRef.current) {
             try {
                 const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document
@@ -104,6 +107,7 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
                     iframeDoc.open()
                     iframeDoc.write(injectPreview(project.current_code))
                     iframeDoc.close()
+                    setSelectedElement(null)
                     setPreviewError(null)
                 }
             } catch (error) {
@@ -111,7 +115,8 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
                 setPreviewError('Failed to render preview')
             }
         }
-    }, [project?.current_code])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [project?.current_code, project?.current_version_id, isRevisionPending, isGenerating])
 
     const getDeviceDimensions = () => {
         switch (device) {
@@ -125,10 +130,11 @@ const BuilderPreview = forwardRef(({ project, isGenerating, device = 'desktop', 
         }
     }
 
-    if (isGenerating && !project?.current_code) {
+    // Show loading screen for initial generation OR active revision
+    if (isRevisionPending || (isGenerating && !project?.current_code)) {
         return (
             <div className="w-full h-full bg-gray-900 rounded-xl overflow-hidden">
-                <LoaderSteps />
+                <LoaderSteps mode={isRevisionPending ? 'update' : 'create'} />
             </div>
         )
     }

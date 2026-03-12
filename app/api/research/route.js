@@ -375,7 +375,8 @@ export async function POST(request) {
                         recordId: 'research-' + Date.now(),
                         selectedModel: normalizedSelectedModel,
                         isPro: true,
-                        useDirectModel: true
+                        useDirectModel: true,
+                        responseMode: 'research'
                     },
                     {
                         headers: { 'Content-Type': 'application/json' },
@@ -438,7 +439,8 @@ export async function POST(request) {
                     })),
                     recordId: 'research-' + Date.now(), // Generate a temporary ID for research
                     selectedModel: normalizedSelectedModel,
-                    isPro: true // This will be handled on the frontend with actual user plan
+                    isPro: true, // This will be handled on the frontend with actual user plan
+                    responseMode: 'research'
                 },
                 {
                     headers: { 'Content-Type': 'application/json' },

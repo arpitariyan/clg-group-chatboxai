@@ -1,6 +1,15 @@
 import axios from "axios";
 import { NextResponse } from "next/server";
 
+const asNonEmpty = (value) => {
+    const normalized = String(value || '').trim();
+    return normalized ? normalized : null;
+};
+
+const uniqueNonEmpty = (values = []) => {
+    return [...new Set(values.map(asNonEmpty).filter(Boolean))];
+};
+
 export async function POST(req) {
     let searchInput = '';
     try {
@@ -19,35 +28,45 @@ export async function POST(req) {
             );
         }
 
-        // Setup backup keys for Google API
-        const googleApiKeys = [
+        const googleSearchEnabled = String(process.env.GOOGLE_CUSTOM_SEARCH_ENABLED || 'true').trim().toLowerCase() !== 'false';
+
+        // Google CSE credentials (preferred aliases + backward-compatible fallbacks).
+        const googleApiKeys = uniqueNonEmpty([
+            process.env.GOOGLE_CUSTOM_SEARCH_API_KEY,
             process.env.GOOGLE_API_KEY,
             process.env.GOOGLE_API_KEY_2,
             process.env.GOOGLE_API_KEY_3,
             process.env.GOOGLE_API_KEY_4,
             process.env.GOOGLE_API_KEY_5
-        ].filter(key => key); // Remove any undefined keys
+        ]);
 
-        const googleCxIds = [
+        const googleCxIds = uniqueNonEmpty([
+            process.env.GOOGLE_CUSTOM_SEARCH_CX_ID,
             process.env.GOOGLE_CX_ID,
             process.env.GOOGLE_CX_ID_2,
             process.env.GOOGLE_CX_ID_3,
             process.env.GOOGLE_CX_ID_4
-        ].filter(id => id); // Remove any undefined IDs
-
-        // Setup backup keys for Gemini API
-        const geminiApiKeys = [
-            process.env.NEXT_PUBLIC_GEMINI_API_KEY,
-            process.env.NEXT_PUBLIC_GEMINI_API_KEY_2,
-            process.env.NEXT_PUBLIC_GEMINI_API_KEY_3,
-            process.env.NEXT_PUBLIC_GEMINI_API_KEY_4
-        ].filter(key => key); // Remove any undefined keys
+        ]);
 
         // console.log('Available API keys:', {
         //     googleKeys: googleApiKeys.length,
         //     googleCxIds: googleCxIds.length,
         //     geminiKeys: geminiApiKeys.length
         // });
+
+        // Fast opt-out switch while keys/CX are being fixed.
+        if (!googleSearchEnabled) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    googleApiUnavailable: true,
+                    message: "Google search is disabled by configuration. Using direct AI model for response.",
+                    searchQuery: searchInput,
+                    categorizedResults: { web: [], images: [], videos: [], all: [] }
+                },
+                { status: 200 }
+            );
+        }
 
         // Check if we have at least one Google API key
         if (googleApiKeys.length === 0 || googleCxIds.length === 0) {
@@ -70,26 +89,20 @@ export async function POST(req) {
             );
         }
 
-        let currentGoogleKeyIndex = 0;
-        let currentGeminiKeyIndex = 0;
+        let lastSuccessfulGoogleKeyIndex = null;
         const mixedResults = [];
-
-        // Function to get current Google API credentials
-        const getCurrentGoogleCredentials = () => ({
-            apiKey: googleApiKeys[currentGoogleKeyIndex],
-            cxId: googleCxIds[Math.min(currentGoogleKeyIndex, googleCxIds.length - 1)]
-        });
-
-        // Function to get current Gemini API key
-        const getCurrentGeminiKey = () => geminiApiKeys[currentGeminiKeyIndex];
+        const loggedGoogleFailures = new Set();
 
         // Function to make search request with automatic key rotation
         const makeSearchRequestWithFallback = async (searchParams) => {
             let lastError = null;
-            
-            for (let attempt = 0; attempt < googleApiKeys.length; attempt++) {
+
+            for (let keyIndex = 0; keyIndex < googleApiKeys.length; keyIndex++) {
                 try {
-                    const credentials = getCurrentGoogleCredentials();
+                    const credentials = {
+                        apiKey: googleApiKeys[keyIndex],
+                        cxId: googleCxIds[Math.min(keyIndex, googleCxIds.length - 1)]
+                    };
                     const requestParams = {
                         ...searchParams,
                         key: credentials.apiKey,
@@ -108,63 +121,23 @@ export async function POST(req) {
 
                     // console.log(`Google Search API success with key ${currentGoogleKeyIndex + 1}`);
                     // If successful, return the response
+                    lastSuccessfulGoogleKeyIndex = keyIndex;
                     return response;
 
                 } catch (error) {
                     lastError = error;
-                    console.warn(`Google API key ${currentGoogleKeyIndex + 1} failed:`, error.response?.data?.error?.message || error.message);
-                    
-                    // Move to next key if available
-                    if (currentGoogleKeyIndex < googleApiKeys.length - 1) {
-                        currentGoogleKeyIndex++;
-                        // console.log(`Switching to Google API key ${currentGoogleKeyIndex + 1}`);
-                    } else {
-                        // All keys failed
-                        break;
+                    const failMessage = error.response?.data?.error?.message || error.message;
+                    const failSignature = `${keyIndex}:${failMessage}`;
+
+                    if (!loggedGoogleFailures.has(failSignature)) {
+                        loggedGoogleFailures.add(failSignature);
+                        console.warn(`Google API key ${keyIndex + 1} failed:`, failMessage);
                     }
                 }
             }
             
             // If we get here, all keys failed
             // console.error('All Google API keys failed');
-            throw lastError;
-        };
-
-        // Function to make Gemini API request with fallback (for future use)
-        const makeGeminiRequestWithFallback = async (requestData) => {
-            let lastError = null;
-            
-            for (let attempt = 0; attempt < geminiApiKeys.length; attempt++) {
-                try {
-                    const apiKey = getCurrentGeminiKey();
-                    
-                    // Example Gemini API call (adjust URL and params as needed)
-                    const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`, requestData, {
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        timeout: 15000,
-                    });
-
-                    // If successful, return the response
-                    return response;
-
-                } catch (error) {
-                    lastError = error;
-                    console.warn(`Gemini API key ${currentGeminiKeyIndex + 1} failed:`, error.response?.data?.error?.message || error.message);
-                    
-                    // Move to next key if available
-                    if (currentGeminiKeyIndex < geminiApiKeys.length - 1) {
-                        currentGeminiKeyIndex++;
-                        // console.log(`Switching to Gemini API key ${currentGeminiKeyIndex + 1}`);
-                    } else {
-                        // All keys failed
-                        break;
-                    }
-                }
-            }
-            
-            // If we get here, all keys failed
             throw lastError;
         };
 
@@ -261,6 +234,23 @@ export async function POST(req) {
         // const finalResults = shuffleMixedResults(mixedResults);
         const finalResults = mixedResults;
 
+        if (webResults.status === 'rejected' && imageResults.status === 'rejected' && finalResults.length === 0) {
+            return NextResponse.json(
+                {
+                    success: false,
+                    googleApiUnavailable: true,
+                    message: "Google Search API credentials are invalid or not enabled. Using direct AI model for response.",
+                    searchQuery: searchInput,
+                    categorizedResults: { web: [], images: [], videos: [], all: [] },
+                    errors: {
+                        webSearchFailed: true,
+                        imageSearchFailed: true
+                    }
+                },
+                { status: 200 }
+            );
+        }
+
         // Separate results by type for easy access
         const categorizedResults = {
             all: finalResults,
@@ -290,10 +280,8 @@ export async function POST(req) {
             },
             // Include information about which keys were used
             apiKeyInfo: {
-                googleKeyUsed: currentGoogleKeyIndex + 1,
-                geminiKeyUsed: currentGeminiKeyIndex + 1,
+                googleKeyUsed: Number.isInteger(lastSuccessfulGoogleKeyIndex) ? lastSuccessfulGoogleKeyIndex + 1 : null,
                 totalGoogleKeys: googleApiKeys.length,
-                totalGeminiKeys: geminiApiKeys.length
             },
             errors: {
                 webSearchFailed: webResults.status === 'rejected',

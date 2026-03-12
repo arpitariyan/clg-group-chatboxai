@@ -309,9 +309,9 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
 
                         {/* Shimmer skeleton lines */}
                         <div className="space-y-2.5">
-                            <div className="h-[14px] w-[85%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse" />
-                            <div className="h-[14px] w-[70%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:150ms]" />
-                            <div className="h-[14px] w-[45%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:300ms]" />
+                            <div className="h-3.5 w-[85%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse" />
+                            <div className="h-3.5 w-[70%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:150ms]" />
+                            <div className="h-3.5 w-[45%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:300ms]" />
                         </div>
                     </div>
                 ) : currentSearchResult?.aiResp ? (

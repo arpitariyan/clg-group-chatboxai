@@ -442,14 +442,32 @@ export default function ImageGenerationResult() {
                                 <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-900 max-w-2xl mx-auto shadow-sm">
                                     {generation?.status === 'generating' ? (
                                         <div className={`${previewAspectClass} flex items-center justify-center min-h-70`}>
-                                            <div className="text-center">
-                                                <div className="animate-spin w-12 h-12 border-2 border-slate-300 dark:border-slate-700 border-t-slate-600 dark:border-t-slate-300 rounded-full mx-auto mb-4"></div>
-                                                <p className="text-slate-600 dark:text-slate-400 text-sm">Creating image...</p>
-                                                {generation?.prompt && (
-                                                    <p className="text-xs leading-relaxed wrap-break-word text-slate-500 dark:text-slate-500 mt-3 px-4">
+                                            <div
+                                                role="status"
+                                                aria-live="polite"
+                                                className="image-gen-loader-shell w-full max-w-md mx-4 text-left"
+                                            >
+                                                <div className="image-gen-loader-track mb-4">
+                                                    <span className="image-gen-loader-sweep"></span>
+                                                </div>
+
+                                                <div className="flex items-center gap-2">
+                                                    <span className="image-gen-loader-dot image-gen-loader-dot-1"></span>
+                                                    <span className="image-gen-loader-dot image-gen-loader-dot-2"></span>
+                                                    <span className="image-gen-loader-dot image-gen-loader-dot-3"></span>
+                                                    {/* <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Creating image</p> */}
+                                                </div>
+
+                                                {/* {generation?.prompt && (
+                                                    <p className="text-xs leading-relaxed wrap-break-word text-slate-500 dark:text-slate-400 mt-3">
                                                         "{generation.prompt.substring(0, 100)}{generation.prompt.length > 100 ? '...' : ''}"
                                                     </p>
-                                                )}
+                                                )} */}
+
+                                                <p className="text-xs text-slate-400 dark:text-slate-500 mt-3">
+                                                    Generating with your selected model and ratio.
+                                                </p>
+                                                <span className="sr-only">Image generation in progress.</span>
                                             </div>
                                         </div>
                                     ) : generation?.status === 'completed' && (generation?.resolvedImageUrl || generation?.publicUrl || generation?.displayUrl || generation?.generatedImagePath) ? (

@@ -32,20 +32,27 @@ const PackagesModal = ({ isOpen, onClose }) => {
   // Load Razorpay script when modal opens
   useEffect(() => {
     if (isOpen && !scriptLoaded && !window.Razorpay) {
+      const existingScript = document.querySelector('script[data-razorpay-checkout="true"]');
+
+      if (existingScript) {
+        existingScript.addEventListener('load', () => setScriptLoaded(true), { once: true });
+        existingScript.addEventListener(
+          'error',
+          () => setPaymentError('Failed to load payment gateway. Please refresh and try again.'),
+          { once: true }
+        );
+        return;
+      }
+
       const script = document.createElement('script');
       script.src = 'https://checkout.razorpay.com/v1/checkout.js';
       script.async = true;
+      script.setAttribute('data-razorpay-checkout', 'true');
       script.onload = () => setScriptLoaded(true);
       script.onerror = () => {
         setPaymentError('Failed to load payment gateway. Please refresh and try again.');
       };
       document.body.appendChild(script);
-      
-      return () => {
-        if (document.body.contains(script)) {
-          document.body.removeChild(script);
-        }
-      };
     } else if (window.Razorpay) {
       setScriptLoaded(true);
     }
@@ -200,8 +207,14 @@ const PackagesModal = ({ isOpen, onClose }) => {
         }
       };
 
-      const razorpay = new window.Razorpay(options);
-      razorpay.open();
+      // Close the plan dialog first so Razorpay checkout is fully interactive.
+      onClose?.();
+
+      // Wait one tick for dialog teardown before opening the external checkout modal.
+      setTimeout(() => {
+        const razorpay = new window.Razorpay(options);
+        razorpay.open();
+      }, 120);
 
     } catch (error) {
       console.error('Payment error:', error);

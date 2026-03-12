@@ -3,24 +3,37 @@
 import { CircleIcon, ScanLineIcon, SquareIcon, TriangleIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 
-const steps = [
+const createSteps = [
     { icon: ScanLineIcon, label: "Analyzing your request…" },
     { icon: SquareIcon, label: "Generating layout structure…" },
     { icon: TriangleIcon, label: "Assembling UI components…" },
     { icon: CircleIcon, label: "Finalizing your website…" },
 ]
 
+const updateSteps = [
+    { icon: ScanLineIcon, label: "Reading your changes…" },
+    { icon: SquareIcon, label: "Applying modifications…" },
+    { icon: TriangleIcon, label: "Rebuilding components…" },
+    { icon: CircleIcon, label: "Finalizing updates…" },
+]
+
 const STEP_DURATION = 45000 // 45 seconds per step
 
-const LoaderSteps = () => {
+const LoaderSteps = ({ mode = 'create' }) => {
+    const steps = mode === 'update' ? updateSteps : createSteps
     const [current, setCurrent] = useState(0)
+
+    // Reset step counter when switching between create / update mode.
+    useEffect(() => {
+        setCurrent(0)
+    }, [mode])
 
     useEffect(() => {
         const interval = setInterval(() => {
             setCurrent((s) => (s + 1) % steps.length)
         }, STEP_DURATION);
         return () => clearInterval(interval)
-    }, [])
+    }, [steps.length])
 
     const Icon = steps[current].icon;
 
@@ -40,7 +53,7 @@ const LoaderSteps = () => {
             </p>
 
             <p className="text-xs text-gray-400 mt-2 transition-opacity duration-700 opacity-100">
-                This may take around 2-3 minutes…
+                {mode === 'update' ? 'Applying your changes…' : 'This may take around 2-3 minutes…'}
             </p>
         </div>
     )

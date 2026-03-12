@@ -254,10 +254,28 @@ function getOpenRouterApiKeys() {
     process.env.OPENROUTER_API_KEY_3,
     process.env.OPENROUTER_API_KEY_4,
     process.env.OPENROUTER_API_KEY_5,
+    process.env.OPENROUTER_API_KEY_6,
+    process.env.OPENROUTER_API_KEY_7,
+    process.env.OPENROUTER_API_KEY_8,
     process.env.NEXT_PUBLIC_OPENROUTER_API_KEY
   ].filter(key => key && key.trim() !== ''); // Remove empty/undefined keys
 
   return keys;
+}
+
+// Keep short-lived key health in memory to avoid hammering keys that are already failing.
+const openRouterKeyCooldown = new Map();
+const OPENROUTER_RATE_LIMIT_COOLDOWN_MS = 90 * 1000;
+const OPENROUTER_CREDIT_COOLDOWN_MS = 30 * 60 * 1000;
+const OPENROUTER_INVALID_KEY_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+
+function isOpenRouterKeyCoolingDown(apiKey) {
+  const until = openRouterKeyCooldown.get(apiKey);
+  return Number.isFinite(until) && Date.now() < until;
+}
+
+function setOpenRouterKeyCooldown(apiKey, ms) {
+  openRouterKeyCooldown.set(apiKey, Date.now() + ms);
 }
 
 function getOpenRouterModelCandidates(model) {
@@ -302,8 +320,374 @@ function getOpenRouterModelCandidates(model) {
   return candidates;
 }
 
+const DEFAULT_RESPONSE_STYLE = {
+  detailLevel: 'detailed',
+  citationMode: 'enabled',
+  languageMode: 'auto'
+};
+
+function normalizeDetailLevel(detailLevel) {
+  return ['brief', 'balanced', 'detailed'].includes(detailLevel) ? detailLevel : DEFAULT_RESPONSE_STYLE.detailLevel;
+}
+
+function normalizeCitationMode(citationMode) {
+  return ['enabled', 'auto', 'disabled'].includes(citationMode) ? citationMode : DEFAULT_RESPONSE_STYLE.citationMode;
+}
+
+function normalizeLanguageMode(languageMode) {
+  return ['auto', 'english', 'hindi', 'hinglish'].includes(languageMode) ? languageMode : DEFAULT_RESPONSE_STYLE.languageMode;
+}
+
+function getDetailInstruction(responseMode, detailLevel) {
+  if (detailLevel === 'brief') {
+    return 'Keep it concise: direct answer plus only essential supporting points. Use ✅ only on the final answer line; skip other emojis.';
+  }
+
+  if (detailLevel === 'balanced') {
+    return 'Provide moderate depth: direct answer, key explanation, and practical takeaways. Use 💡 on tip bullets, ⚠️ on warnings, and ✅ on the final answer line.';
+  }
+
+  if (responseMode === 'research') {
+    return 'Provide high depth: clear reasoning, structured sections, and evidence-led explanation. Use the full emoji palette: 🔑 for key concepts, 💡 for insights, ⚠️ for caveats, 📝 for notes, 📋 for summaries, and ✅ on the final answer line.';
+  }
+
+  return 'Provide high quality depth: direct answer first, then structured explanation with useful details. Use the full emoji palette: 🚀 for intro/getting-started headings, 🔧 for setup/install steps, 💻 for code sections, 💡 for tips, ⚠️ for warnings, 🔑 for key concepts, 📦 for requirements, and ✅ on the final answer line.';
+}
+
+function getCitationInstruction(citationMode, hasContext) {
+  if (citationMode === 'disabled') {
+    return 'Do not add citations unless the user explicitly asks for sources.';
+  }
+
+  if (citationMode === 'enabled') {
+    return hasContext
+      ? 'When making factual claims from provided context, include source links or source labels in markdown.'
+      : 'If you do not have reliable sources in context, do not fabricate links; state that no verified source link is available in provided context.';
+  }
+
+  return hasContext
+    ? 'Include concise citations when provided context contains reliable sources.'
+    : 'Add citations only when reliable sources are available; never invent links.';
+}
+
+function getLanguageInstruction(languageMode) {
+  if (languageMode === 'english') {
+    return 'Respond in English.';
+  }
+  if (languageMode === 'hindi') {
+    return 'Respond in Hindi.';
+  }
+  if (languageMode === 'hinglish') {
+    return 'Respond in natural Hinglish.';
+  }
+
+  return 'Auto-detect the user language style and mirror it naturally (English/Hindi/Hinglish).';
+}
+
+function getResponseContract({
+  responseMode = 'search',
+  detailLevel = DEFAULT_RESPONSE_STYLE.detailLevel,
+  citationMode = DEFAULT_RESPONSE_STYLE.citationMode,
+  languageMode = DEFAULT_RESPONSE_STYLE.languageMode,
+  hasContext = false
+} = {}) {
+  const safeMode = responseMode === 'research' ? 'research' : 'search';
+  const safeDetailLevel = normalizeDetailLevel(detailLevel);
+  const safeCitationMode = normalizeCitationMode(citationMode);
+  const safeLanguageMode = normalizeLanguageMode(languageMode);
+
+  const rules = [
+    'Answer the exact user question first in 1 direct sentence.',
+    safeMode === 'research'
+      ? 'Stay grounded in provided context and present evidence-focused reasoning.'
+      : 'Stay focused; avoid greetings, filler intros, and tangents.',
+    getDetailInstruction(safeMode, safeDetailLevel),
+    'Use clean markdown structure when helpful: short heading(s), bullet points, and code blocks only when needed.',
+    'For explanatory questions, include practical steps or examples where useful.',
+    getCitationInstruction(safeCitationMode, hasContext),
+    'If context is insufficient, clearly say what is missing and provide the best safe answer without inventing facts.',
+    getLanguageInstruction(safeLanguageMode),
+    'Use emojis purposefully, matching the content type — exactly like ChatGPT and Claude do. Emoji palette to follow: 🚀 introduction / getting-started headings, 🔧 installation / setup / configuration headings or steps, 💻 code-related sections or run-command bullets, 📦 requirements / dependencies bullets, 💡 tips, insights, and pro-advice bullets, ⚠️ warnings, caveats, and important-notice bullets, ❌ incorrect approach or "do not do this" bullets, 🔑 key concept bullets, 📝 notes and additional-info bullets, 📋 summary / overview section headings, ✅ the very last answer line only. Rules: place ONE emoji at the very START of a ## heading or a bullet point — never mid-sentence, never two on the same line, never inside a code block or table cell, never on plain flowing prose.',
+    'End with a concise final answer line.'
+  ];
+
+  return `You are ChatBox AI in ${safeMode} mode. Follow these rules strictly:\n${rules.map((rule, index) => `${index + 1}) ${rule}`).join('\n')}`;
+}
+
+const FILLER_PREFIXES = [
+  /^\s*(great\s+question[.!]?\s*)/i,
+  /^\s*(sure[.!]?\s*)/i,
+  /^\s*(of\s+course[.!]?\s*)/i,
+  /^\s*(absolutely[.!]?\s*)/i,
+  /^\s*(certainly[.!]?\s*)/i,
+  /^\s*(here\s+is[\s:,-]*)/i,
+  /^\s*(let'?s\s+(dive\s+in|get\s+started)[.!]?\s*)/i,
+  /^\s*(okay[.!]?\s*)/i
+];
+
+const FILLER_SUFFIXES = [
+  /\n?\s*(hope\s+this\s+helps[.!]?\s*)$/i,
+  /\n?\s*(let\s+me\s+know\s+if\s+you\s+need\s+anything\s+else[.!]?\s*)$/i,
+  /\n?\s*(feel\s+free\s+to\s+ask\s+more\s+questions[.!]?\s*)$/i
+];
+
+const STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how', 'i', 'in', 'is', 'it', 'of',
+  'on', 'or', 'that', 'the', 'this', 'to', 'was', 'were', 'what', 'when', 'where', 'who', 'why', 'with',
+  'you', 'your', 'ka', 'ki', 'ke', 'hai', 'kya', 'kaise', 'mein', 'main', 'aur', 'ya', 'toh', 'ko'
+]);
+
+function getKeywordTokens(text) {
+  if (!text || typeof text !== 'string') {
+    return [];
+  }
+
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(token => token.length > 2 && !STOP_WORDS.has(token));
+}
+
+function buildStrictPrompt({
+  question,
+  contextLabel,
+  contextBody,
+  taskInstruction,
+  responseMode = 'search',
+  detailLevel = DEFAULT_RESPONSE_STYLE.detailLevel,
+  citationMode = DEFAULT_RESPONSE_STYLE.citationMode,
+  languageMode = DEFAULT_RESPONSE_STYLE.languageMode
+}) {
+  const safeQuestion = String(question || '').trim();
+  const safeContextLabel = String(contextLabel || '').trim();
+  const safeContextBody = String(contextBody || '').trim();
+  const safeTaskInstruction = String(taskInstruction || '').trim();
+  const safeDetailLevel = normalizeDetailLevel(detailLevel);
+  const safeCitationMode = normalizeCitationMode(citationMode);
+  const safeLanguageMode = normalizeLanguageMode(languageMode);
+
+  let prompt = `${getResponseContract({
+    responseMode,
+    detailLevel: safeDetailLevel,
+    citationMode: safeCitationMode,
+    languageMode: safeLanguageMode,
+    hasContext: Boolean(safeContextBody)
+  })}\n\nUser Question:\n${safeQuestion}`;
+
+  if (safeContextBody) {
+    prompt += `\n\n${safeContextLabel || 'Context'}:\n${safeContextBody}`;
+  }
+
+  if (safeTaskInstruction) {
+    prompt += `\n\nTask:\n${safeTaskInstruction}`;
+  }
+
+  prompt += `\n\nResponse Blueprint:\n- Start with the direct answer.\n- Use short ## markdown headings for each major section; prefix each heading with the right emoji (🚀 intro, 🔧 setup, 💻 code, 📋 summary, etc.).\n- Bullet points: prefix tip bullets with 💡, warning bullets with ⚠️, key-concept bullets with 🔑, note bullets with 📝, requirement bullets with 📦, incorrect-approach bullets with ❌.\n- Include code examples in fenced code blocks (no emojis inside blocks).\n- End with a single ✅ summary line.\n- Keep every section relevant to the asked question only.`;
+  prompt += `\n\nReturn only the final answer.`;
+  return prompt;
+}
+
+function getGenerationConfig(detailLevel = DEFAULT_RESPONSE_STYLE.detailLevel) {
+  const safeDetailLevel = normalizeDetailLevel(detailLevel);
+
+  if (safeDetailLevel === 'brief') {
+    return { maxTokens: 1200, temperature: 0.55 };
+  }
+
+  if (safeDetailLevel === 'balanced') {
+    return { maxTokens: 2048, temperature: 0.65 };
+  }
+
+  return { maxTokens: 3072, temperature: 0.7 };
+}
+
+function resolveResponseStyle({ detailLevel, citationMode, languageMode } = {}) {
+  return {
+    detailLevel: normalizeDetailLevel(detailLevel),
+    citationMode: normalizeCitationMode(citationMode),
+    languageMode: normalizeLanguageMode(languageMode)
+  };
+}
+
+function collapseMarkdownWhitespace(text) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const normalized = [];
+  let inCodeFence = false;
+  let blankCount = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[ \t]+$/g, '');
+
+    if (/^\s*```/.test(line)) {
+      inCodeFence = !inCodeFence;
+      normalized.push(line);
+      blankCount = 0;
+      continue;
+    }
+
+    if (inCodeFence) {
+      normalized.push(rawLine.replace(/\r/g, ''));
+      continue;
+    }
+
+    if (line.trim() === '') {
+      blankCount += 1;
+      if (blankCount <= 2) {
+        normalized.push('');
+      }
+      continue;
+    }
+
+    blankCount = 0;
+    normalized.push(line);
+  }
+
+  return normalized.join('\n').trim();
+}
+
+function normalizeAiRespText(text) {
+  const original = typeof text === 'string' ? text : String(text || '');
+  let cleaned = original.trim();
+
+  if (!cleaned) {
+    return '';
+  }
+
+  // Remove common filler prefixes repeatedly until stable.
+  let updated = true;
+  while (updated) {
+    updated = false;
+    for (const prefix of FILLER_PREFIXES) {
+      const next = cleaned.replace(prefix, '').trimStart();
+      if (next !== cleaned) {
+        cleaned = next;
+        updated = true;
+      }
+    }
+  }
+
+  for (const suffix of FILLER_SUFFIXES) {
+    cleaned = cleaned.replace(suffix, '').trimEnd();
+  }
+
+  cleaned = collapseMarkdownWhitespace(cleaned);
+
+  return cleaned || original.trim();
+}
+
+function calculateRelevanceScore(question, response) {
+  const questionTokens = getKeywordTokens(question);
+  const responseTokens = new Set(getKeywordTokens(response));
+
+  if (questionTokens.length <= 1) {
+    return 1;
+  }
+
+  let overlap = 0;
+  for (const token of questionTokens) {
+    if (responseTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap / questionTokens.length;
+}
+
+function splitByMarkdownSections(responseText) {
+  const lines = responseText.split('\n');
+  const sections = [];
+  let current = [];
+
+  for (const line of lines) {
+    if (/^##\s+/.test(line) && current.length > 0) {
+      sections.push(current.join('\n').trim());
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+
+  if (current.length > 0) {
+    sections.push(current.join('\n').trim());
+  }
+
+  return sections.filter(Boolean);
+}
+
+function focusResponseByQuestion(question, response, { responseMode = 'search', detailLevel = DEFAULT_RESPONSE_STYLE.detailLevel } = {}) {
+  const responseText = typeof response === 'string' ? response.trim() : '';
+  if (!responseText) {
+    return responseText;
+  }
+
+  const safeMode = responseMode === 'research' ? 'research' : 'search';
+  const safeDetailLevel = normalizeDetailLevel(detailLevel);
+
+  if (safeMode === 'research' || safeDetailLevel === 'detailed') {
+    return responseText;
+  }
+
+  const score = calculateRelevanceScore(question, responseText);
+  if (score >= 0.2) {
+    return responseText;
+  }
+
+  const hasComplexMarkdown = /```|^#|^\s*[-*]\s+/m.test(responseText);
+  if (hasComplexMarkdown) {
+    return responseText;
+  }
+
+  const questionTokens = new Set(getKeywordTokens(question));
+  const sections = splitByMarkdownSections(responseText);
+  const units = sections.length > 1 ? sections : responseText.split(/\n\s*\n/);
+  const maxUnits = safeDetailLevel === 'brief' ? 2 : 4;
+  const ranked = units
+    .map((unit, index) => {
+      const tokens = getKeywordTokens(unit);
+      const matchCount = tokens.reduce((count, token) => count + (questionTokens.has(token) ? 1 : 0), 0);
+      return { index, section: unit.trim(), matchCount };
+    })
+    .filter(item => item.section.length > 0)
+    .sort((a, b) => b.matchCount - a.matchCount || a.index - b.index);
+
+  const focused = ranked
+    .filter(item => item.matchCount > 0)
+    .slice(0, maxUnits)
+    .sort((a, b) => a.index - b.index)
+    .map(item => item.section)
+    .join('\n\n')
+    .trim();
+
+  return focused || responseText;
+}
+
+function refineAiResp(question, rawResponse, { responseMode = 'search', detailLevel = DEFAULT_RESPONSE_STYLE.detailLevel } = {}) {
+  const normalized = normalizeAiRespText(rawResponse);
+  if (!normalized) {
+    return typeof rawResponse === 'string' ? rawResponse.trim() : String(rawResponse || '');
+  }
+
+  const focused = focusResponseByQuestion(question, normalized, { responseMode, detailLevel });
+  const refined = normalizeAiRespText(focused);
+
+  if (!refined) {
+    return normalized;
+  }
+
+  return refined;
+}
+
+function refineResearchResp(rawResponse) {
+  const normalized = normalizeAiRespText(rawResponse);
+  if (!normalized) {
+    return typeof rawResponse === 'string' ? rawResponse.trim() : String(rawResponse || '');
+  }
+  return normalized;
+}
+
 // Helper function to call OpenRouter API with automatic key failover
-async function callOpenRouter(model, prompt) {
+async function callOpenRouter(model, prompt, generationConfig = {}) {
   const apiKeys = getOpenRouterApiKeys();
   const modelCandidates = getOpenRouterModelCandidates(model);
 
@@ -313,6 +697,8 @@ async function callOpenRouter(model, prompt) {
   }
 
   let lastError = null;
+  const requestLoggedFailures = new Set();
+  let attemptedAnyKey = false;
 
   for (const candidateModel of modelCandidates) {
     // Try each API key in sequence
@@ -320,7 +706,12 @@ async function callOpenRouter(model, prompt) {
       const apiKey = apiKeys[i];
       const keyNumber = i + 1;
 
+      if (isOpenRouterKeyCoolingDown(apiKey)) {
+        continue;
+      }
+
       try {
+        attemptedAnyKey = true;
         // console.log(`🔑 OpenRouter: Trying API key #${keyNumber}/${apiKeys.length} for model ${candidateModel}...`);
 
         const requestBody = {
@@ -331,8 +722,8 @@ async function callOpenRouter(model, prompt) {
               content: prompt
             }
           ],
-          max_tokens: 2048,
-          temperature: 0.7
+          max_tokens: generationConfig.maxTokens || 2048,
+          temperature: generationConfig.temperature ?? 0.7
         };
 
         // console.log(`📤 OpenRouter: Sending request with model: ${candidateModel}, prompt length: ${prompt.length}`);
@@ -383,40 +774,71 @@ async function callOpenRouter(model, prompt) {
         }
 
         if (response.status === 401) {
-          console.warn(`❌ OpenRouter: API key #${keyNumber} invalid/expired for model ${candidateModel}`);
+          setOpenRouterKeyCooldown(apiKey, OPENROUTER_INVALID_KEY_COOLDOWN_MS);
+          const logKey = `401:${keyNumber}`;
+          if (!requestLoggedFailures.has(logKey)) {
+            requestLoggedFailures.add(logKey);
+            console.warn(`❌ OpenRouter: API key #${keyNumber} invalid/expired for model ${candidateModel}`);
+          }
           lastError = new Error(`OpenRouter authentication failed: Invalid API key #${keyNumber}`);
           continue;
         }
 
         if (response.status === 429) {
-          console.warn(`⏱️ OpenRouter: API key #${keyNumber} rate limited for model ${candidateModel}`);
+          setOpenRouterKeyCooldown(apiKey, OPENROUTER_RATE_LIMIT_COOLDOWN_MS);
+          const logKey = `429:${keyNumber}:${candidateModel}`;
+          if (!requestLoggedFailures.has(logKey)) {
+            requestLoggedFailures.add(logKey);
+            console.warn(`⏱️ OpenRouter: API key #${keyNumber} rate limited for model ${candidateModel}`);
+          }
           lastError = new Error(`OpenRouter rate limit exceeded with API key #${keyNumber}`);
           continue;
         }
 
         if (response.status === 402 || response.status === 403) {
-          console.warn(`💳 OpenRouter: API key #${keyNumber} insufficient credits/permissions for model ${candidateModel}`);
+          setOpenRouterKeyCooldown(apiKey, OPENROUTER_CREDIT_COOLDOWN_MS);
+          const logKey = `402403:${keyNumber}`;
+          if (!requestLoggedFailures.has(logKey)) {
+            requestLoggedFailures.add(logKey);
+            console.warn(`💳 OpenRouter: API key #${keyNumber} insufficient credits/permissions for model ${candidateModel}`);
+          }
           lastError = new Error(`OpenRouter insufficient credits/permissions with API key #${keyNumber}`);
           continue;
         }
 
         if (response.status === 400) {
-          console.warn(`⚠️ OpenRouter: Bad request for key #${keyNumber}. Model might be malformed: ${candidateModel}`);
+          const logKey = `400:${candidateModel}`;
+          if (!requestLoggedFailures.has(logKey)) {
+            requestLoggedFailures.add(logKey);
+            console.warn(`⚠️ OpenRouter: Bad request for key #${keyNumber}. Model might be malformed: ${candidateModel}`);
+          }
           lastError = new Error(`OpenRouter bad request: Invalid model name or request format - ${candidateModel}`);
           continue;
         }
 
         // For other errors, still try next key but log the error
-        console.warn(`⚠️ OpenRouter: API key #${keyNumber} failed with status ${response.status}`);
+        const genericLogKey = `${response.status}:${keyNumber}:${candidateModel}`;
+        if (!requestLoggedFailures.has(genericLogKey)) {
+          requestLoggedFailures.add(genericLogKey);
+          console.warn(`⚠️ OpenRouter: API key #${keyNumber} failed with status ${response.status}`);
+        }
         lastError = new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText.substring(0, 120)}`);
         continue;
 
       } catch (error) {
-        console.warn(`🔥 OpenRouter: Exception with API key #${keyNumber}:`, error.message);
+        const exceptionLogKey = `EX:${keyNumber}:${candidateModel}:${error.message}`;
+        if (!requestLoggedFailures.has(exceptionLogKey)) {
+          requestLoggedFailures.add(exceptionLogKey);
+          console.warn(`🔥 OpenRouter: Exception with API key #${keyNumber}:`, error.message);
+        }
         lastError = error;
         continue;
       }
     }
+  }
+
+  if (!attemptedAnyKey) {
+    throw lastError || new Error('OpenRouter keys are temporarily cooling down due to rate limits/credit issues');
   }
 
   console.error(`❌ OpenRouter failed for all candidates of model ${model}`);
@@ -437,7 +859,7 @@ function getGeminiApiKeys() {
 }
 
 // Helper function to call Google Gemini API with automatic key failover
-async function callGemini(prompt) {
+async function callGemini(prompt, generationConfig = {}) {
   const apiKeys = getGeminiApiKeys();
 
   if (apiKeys.length === 0) {
@@ -457,7 +879,13 @@ async function callGemini(prompt) {
 
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          maxOutputTokens: generationConfig.maxTokens || 2048,
+          temperature: generationConfig.temperature ?? 0.7
+        }
+      });
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
@@ -523,7 +951,7 @@ function getA4FApiKeys() {
 }
 
 // Helper function to call A4F API with automatic key failover
-async function callA4F(model, prompt) {
+async function callA4F(model, prompt, generationConfig = {}) {
   const apiKeys = getA4FApiKeys();
 
   if (apiKeys.length === 0) {
@@ -560,8 +988,8 @@ async function callA4F(model, prompt) {
                 content: prompt
               }
             ],
-            max_tokens: 2048,
-            temperature: 0.7
+            max_tokens: generationConfig.maxTokens || 2048,
+            temperature: generationConfig.temperature ?? 0.7
           }),
           signal: controller.signal
         });
@@ -640,7 +1068,7 @@ async function callA4F(model, prompt) {
 }
 
 // Helper function for advanced image analysis with key failover
-async function analyzeImageWithGemini(imageData, userPrompt = null) {
+async function analyzeImageWithGemini(imageData, userPrompt = null, responseMode = 'search', responseStyle = DEFAULT_RESPONSE_STYLE) {
   const apiKeys = getGeminiApiKeys();
 
   if (apiKeys.length === 0) {
@@ -660,23 +1088,36 @@ async function analyzeImageWithGemini(imageData, userPrompt = null) {
 
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const generationConfig = getGenerationConfig(responseStyle.detailLevel);
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          maxOutputTokens: generationConfig.maxTokens,
+          temperature: generationConfig.temperature
+        }
+      });
 
       // Create comprehensive analysis prompt similar to your example
       const analysisPrompt = userPrompt
-        ? `Analyze this image in detail and then answer the user's specific question.
-
-User Question: "${userPrompt}"
-
-Please provide:
-1. A detailed description of what you see in the image
-2. Identify all objects, text, people, and elements present
-3. Analyze the context, setting, and any relevant details
-4. Answer the user's specific question based on your analysis
-5. Provide additional insights that might be relevant to their question
-
-Format your response in clear sections with detailed explanations.`
-        : `Describe this image in comprehensive detail. Identify all objects, text, people, and elements you can see. Analyze the context, setting, colors, composition, and any other relevant visual information. Be thorough and descriptive.`;
+        ? buildStrictPrompt({
+          question: userPrompt,
+          contextLabel: 'Image Context',
+          contextBody: 'Use only the provided image(s) as primary evidence.',
+          taskInstruction: responseMode === 'research'
+            ? 'Analyze the image carefully and provide a slightly deeper answer with relevant visual evidence tied to the user question.'
+            : 'Analyze the image carefully and answer the exact user question directly. Include only useful details related to the question.',
+          responseMode,
+          detailLevel: responseStyle.detailLevel,
+          citationMode: responseStyle.citationMode,
+          languageMode: responseStyle.languageMode
+        })
+        : `${getResponseContract({
+          responseMode,
+          detailLevel: responseStyle.detailLevel,
+          citationMode: responseStyle.citationMode,
+          languageMode: responseStyle.languageMode,
+          hasContext: true
+        })}\n\nTask:\nAnalyze the provided image(s) and return a concise, accurate description without unrelated commentary.`;
 
       // Prepare content parts for the API call
       const contentParts = [
@@ -754,7 +1195,7 @@ Format your response in clear sections with detailed explanations.`
 }
 
 // Helper function to combine image analysis with document content (with key failover)
-async function analyzeImageAndDocuments(imageData, documentContent, userPrompt) {
+async function analyzeImageAndDocuments(imageData, documentContent, userPrompt, responseMode = 'search', responseStyle = DEFAULT_RESPONSE_STYLE) {
   const apiKeys = getGeminiApiKeys();
 
   if (apiKeys.length === 0) {
@@ -774,23 +1215,27 @@ async function analyzeImageAndDocuments(imageData, documentContent, userPrompt) 
 
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const generationConfig = getGenerationConfig(responseStyle.detailLevel);
+      const model = genAI.getGenerativeModel({
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          maxOutputTokens: generationConfig.maxTokens,
+          temperature: generationConfig.temperature
+        }
+      });
 
-      const combinedPrompt = `You are analyzing both images and documents together. Please provide a comprehensive response.
-
-User Question: "${userPrompt}"
-
-Document Content:
-${documentContent}
-
-Please:
-1. Analyze the image(s) in detail
-2. Review the document content
-3. Find connections between the visual and textual information
-4. Answer the user's question using insights from both sources
-5. Provide a comprehensive response that integrates all available information
-
-Format your response with clear sections and detailed explanations.`;
+      const combinedPrompt = buildStrictPrompt({
+        question: userPrompt,
+        contextLabel: 'Document Context',
+        contextBody: documentContent,
+        taskInstruction: responseMode === 'research'
+          ? 'Use both document and image evidence. Provide a slightly more detailed synthesis with relevant supporting points tied to the question.'
+          : 'Use both document and image evidence. Answer the user question directly, include relevant supporting points, and avoid unrelated details.',
+        responseMode,
+        detailLevel: responseStyle.detailLevel,
+        citationMode: responseStyle.citationMode,
+        languageMode: responseStyle.languageMode
+      });
 
       const contentParts = [{ text: combinedPrompt }];
 
@@ -934,7 +1379,7 @@ async function generateCreatorResponse() {
     const randomPrompt = creativePrompts[Math.floor(Math.random() * creativePrompts.length)];
 
     // Use Gemini to generate a unique response
-    const uniqueResponse = await callGemini(randomPrompt);
+    const uniqueResponse = await callGemini(randomPrompt, getGenerationConfig('detailed'));
 
     return uniqueResponse;
   } catch (error) {
@@ -971,9 +1416,9 @@ My existence is proof of ChatBox AI's commitment to pushing the boundaries of wh
   }
 }
 
-async function callBestOption(prompt) {
+async function callBestOption(prompt, generationConfig = {}) {
   try {
-    const geminiResult = await callGemini(prompt);
+    const geminiResult = await callGemini(prompt, generationConfig);
     if (geminiResult) {
       return geminiResult;
     }
@@ -982,19 +1427,22 @@ async function callBestOption(prompt) {
   }
 
   const openRouterModels = [
-    // 'deepseek/deepseek-chat-v3.1:free',
-    'z-ai/glm-4.5-air:free',
-    'meta-llama/llama-4-scout:free',
-    'qwen/qwen3-coder:free',
-    'google/gemma-3n-e2b-it:free',
-    'qwen/qwen3-4b:free',
     'google/gemma-3-27b-it:free',
-    // 'deepseek/deepseek-r1:free'
+    'google/gemma-3-12b-it:free',
+    'google/gemma-3n-e4b-it:free',
+    'meta-llama/llama-4-scout:free',
+    'meta-llama/llama-4-maverick:free',
+    'z-ai/glm-4.5-air:free',
+    'mistralai/mistral-7b-instruct:free',
+    'microsoft/phi-4-reasoning:free',
+    'tngtech/deepseek-r1t-chimera:free',
+    'qwen/qwen3-coder:free',
+    'qwen/qwen3-4b:free',
   ];
 
   for (const model of openRouterModels) {
     try {
-      const result = await callOpenRouter(model, prompt);
+      const result = await callOpenRouter(model, prompt, generationConfig);
       if (result) {
         return result;
       }
@@ -1011,7 +1459,7 @@ async function callBestOption(prompt) {
 
   for (const model of a4fModels) {
     try {
-      const result = await callA4F(model, prompt);
+      const result = await callA4F(model, prompt, generationConfig);
       if (result) {
         return result;
       }
@@ -1030,7 +1478,21 @@ export const llmModel = inngest.createFunction(
   async ({ event, step }) => {
 
     try {
-      const { searchInput, searchResult, recordId, selectedModel, isPro, useDirectModel } = event.data;
+      const {
+        searchInput,
+        searchResult,
+        recordId,
+        selectedModel,
+        isPro,
+        useDirectModel,
+        responseMode,
+        detailLevel,
+        citationMode,
+        languageMode
+      } = event.data;
+      const outputMode = responseMode === 'research' ? 'research' : 'search';
+      const responseStyle = resolveResponseStyle({ detailLevel, citationMode, languageMode });
+      const generationConfig = getGenerationConfig(responseStyle.detailLevel);
 
       if (!searchInput || !recordId) {
         const error = `Missing required data: searchInput=${!!searchInput}, recordId=${!!recordId}`;
@@ -1058,22 +1520,26 @@ export const llmModel = inngest.createFunction(
         const { hasImages, hasDocuments, imageData, documentContent } = contentAnalysis;
 
         if (hasImages && hasDocuments) {
-          return await analyzeImageAndDocuments(imageData, documentContent, searchInput);
+          return await analyzeImageAndDocuments(imageData, documentContent, searchInput, outputMode, responseStyle);
 
         } else if (hasImages) {
-          return await analyzeImageWithGemini(imageData, searchInput);
+          return await analyzeImageWithGemini(imageData, searchInput, outputMode, responseStyle);
 
         } else if (hasDocuments) {
-          const documentPrompt = `Based on the following document content and user question, provide a comprehensive analysis:
+          const documentPrompt = buildStrictPrompt({
+            question: searchInput,
+            contextLabel: 'Document Content',
+            contextBody: documentContent,
+            taskInstruction: outputMode === 'research'
+              ? 'Answer using the document context first and include slightly deeper analysis with relevant supporting points. Use 🔑 on key-concept bullets, 💡 on insight bullets, ⚠️ on caveats, 📝 on notes, and ✅ on the final answer line.'
+              : 'Answer using the document context first. Keep the response precise and directly aligned with the question. Use 💡 on tip bullets, ⚠️ on warning bullets, and ✅ on the final answer line.',
+            responseMode: outputMode,
+            detailLevel: responseStyle.detailLevel,
+            citationMode: responseStyle.citationMode,
+            languageMode: responseStyle.languageMode
+          });
 
-User Question: "${searchInput}"
-
-Document Content:
-${documentContent}
-
-Please provide detailed insights, extract key information, and answer the user's question thoroughly.`;
-
-          return await callGemini(documentPrompt);
+          return await callGemini(documentPrompt, generationConfig);
 
         } else {
           // Regular web search results analysis
@@ -1082,80 +1548,90 @@ Please provide detailed insights, extract key information, and answer the user's
           // If Google API failed (useDirectModel is true) or no search results, do direct AI query
           if (useDirectModel || validSearchResult.length === 0) {
             // console.log('🤖 Using direct AI model (Google API unavailable or no results)');
-            const directPrompt = `Please provide a comprehensive and detailed response to the following question. Use your knowledge to give accurate, helpful information formatted in markdown with proper headings, bullet points, and structure:
-
-User Question: ${searchInput}
-
-Provide a well-structured, informative response.`;
+            const directPrompt = buildStrictPrompt({
+              question: searchInput,
+              taskInstruction: outputMode === 'research'
+                ? 'Provide a direct but slightly more detailed best-effort answer with useful structure and no unrelated content. Use 🔑 on key bullets, 💡 on insight bullets, ⚠️ on caveats, 📝 on notes, and ✅ on the final answer line.'
+                : 'Provide a direct and refined best-effort answer with no unrelated content. Use 💡 on tips, ⚠️ on warnings, and ✅ on the final answer line.',
+              responseMode: outputMode,
+              detailLevel: responseStyle.detailLevel,
+              citationMode: responseStyle.citationMode,
+              languageMode: responseStyle.languageMode
+            });
 
 
             // Use a4f models for direct queries when specified, otherwise use best option
             if (!actualModel || actualModel.modelApi === 'best') {
-              return await callBestOption(directPrompt);
+              return await callBestOption(directPrompt, generationConfig);
             } else if (actualModel.provider === 'a4f' || actualModel.provider?.startsWith('provider-')) {
               // Try A4F with automatic fallback to Gemini on failure
               try {
                 // console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
-                return await callA4F(actualModel.modelApi, directPrompt);
+                return await callA4F(actualModel.modelApi, directPrompt, generationConfig);
               } catch (a4fError) {
                 console.warn(`⚠️ A4F model ${actualModel.modelApi} failed, falling back to Google Gemini:`, a4fError.message);
                 // Automatic fallback to Google Gemini
-                return await callGemini(directPrompt);
+                return await callGemini(directPrompt, generationConfig);
               }
             } else if (actualModel.provider === 'google') {
-              return await callGemini(directPrompt);
+              return await callGemini(directPrompt, generationConfig);
             } else if (actualModel.provider === 'openrouter') {
               try {
-                return await callOpenRouter(actualModel.modelApi, directPrompt);
+                return await callOpenRouter(actualModel.modelApi, directPrompt, generationConfig);
               } catch (openRouterError) {
                 console.warn(`⚠️ OpenRouter model ${actualModel.modelApi} failed, falling back to Google Gemini:`, openRouterError.message);
                 try {
-                  return await callGemini(directPrompt);
+                  return await callGemini(directPrompt, generationConfig);
                 } catch (geminiError) {
                   console.warn('⚠️ Gemini fallback failed, trying A4F fallback:', geminiError.message);
                   try {
-                    return await callA4F('provider-6/qwen3-32b', directPrompt);
+                    return await callA4F('provider-6/qwen3-32b', directPrompt, generationConfig);
                   } catch (a4fError) {
                     console.warn('⚠️ A4F fallback failed, using best-option fallback:', a4fError.message);
-                    return await callBestOption(directPrompt);
+                    return await callBestOption(directPrompt, generationConfig);
                   }
                 }
               }
             } else {
               // Fallback to best option
-              return await callBestOption(directPrompt);
+              return await callBestOption(directPrompt, generationConfig);
             }
 
 
           } else {
             // Normal flow with search results
-            const prompt = `Based on the following search input and results, provide a comprehensive markdown-formatted response:
-
-User Input: ${searchInput}
-
-Search Results: ${JSON.stringify(validSearchResult)}
-
-Please summarize and provide detailed information about the topic in markdown format with proper headings, bullet points, and formatting.`;
+            const prompt = buildStrictPrompt({
+              question: searchInput,
+              contextLabel: 'Search Results',
+              contextBody: JSON.stringify(validSearchResult),
+              taskInstruction: outputMode === 'research'
+                ? 'Use the search results as evidence, provide a slightly more detailed synthesis, and stay tightly focused on the asked question. Use 🔑 on key bullets, 💡 on insight bullets, ⚠️ on caveats, 📝 on notes, and ✅ on the final answer line.'
+                : 'Use the search results as evidence and answer only the asked question. Remove tangential information. Use 💡 on tips, ⚠️ on warnings, 🔑 on key points, and ✅ on the final answer line.',
+              responseMode: outputMode,
+              detailLevel: responseStyle.detailLevel,
+              citationMode: responseStyle.citationMode,
+              languageMode: responseStyle.languageMode
+            });
 
             // Handle different model selections using actualModel
             if (!actualModel || actualModel.modelApi === 'best') {
-              return await callBestOption(prompt);
+              return await callBestOption(prompt, generationConfig);
             } else if (actualModel.provider === 'google') {
-              return await callGemini(prompt);
+              return await callGemini(prompt, generationConfig);
             } else if (actualModel.provider === 'openrouter') {
               try {
-                return await callOpenRouter(actualModel.modelApi, prompt);
+                return await callOpenRouter(actualModel.modelApi, prompt, generationConfig);
               } catch (openRouterError) {
                 console.warn(`⚠️ OpenRouter model ${actualModel.modelApi} failed, falling back to Google Gemini:`, openRouterError.message);
                 try {
-                  return await callGemini(prompt);
+                  return await callGemini(prompt, generationConfig);
                 } catch (geminiError) {
                   console.warn('⚠️ Gemini fallback failed, trying A4F fallback:', geminiError.message);
                   try {
-                    return await callA4F('provider-6/qwen3-32b', prompt);
+                    return await callA4F('provider-6/qwen3-32b', prompt, generationConfig);
                   } catch (a4fError) {
                     console.warn('⚠️ A4F fallback failed, using best-option fallback:', a4fError.message);
-                    return await callBestOption(prompt);
+                    return await callBestOption(prompt, generationConfig);
                   }
                 }
               }
@@ -1163,17 +1639,33 @@ Please summarize and provide detailed information about the topic in markdown fo
               // Try A4F with automatic fallback to Gemini on failure
               try {
                 // console.log(`🔄 Attempting A4F model: ${actualModel.modelApi}`);
-                return await callA4F(actualModel.modelApi, prompt);
+                return await callA4F(actualModel.modelApi, prompt, generationConfig);
               } catch (a4fError) {
                 console.warn(`⚠️ A4F model ${actualModel.modelApi} failed, falling back to Google Gemini:`, a4fError.message);
                 // Automatic fallback to Google Gemini
-                return await callGemini(prompt);
+                return await callGemini(prompt, generationConfig);
               }
             } else {
-              return await callGemini(prompt);
+              return await callGemini(prompt, generationConfig);
             }
           }
         }
+      });
+
+      const refinedAiResp = await step.run('refine-ai-response', async () => {
+        if (outputMode === 'research') {
+          return refineResearchResp(aiResp);
+        }
+
+        const refined = refineAiResp(searchInput, aiResp, {
+          responseMode: outputMode,
+          detailLevel: responseStyle.detailLevel
+        });
+        const relevanceScore = calculateRelevanceScore(searchInput, refined);
+        if (relevanceScore < 0.2) {
+          console.warn('⚠️ Low relevance score after search refinement:', relevanceScore);
+        }
+        return refined || aiResp;
       });
 
       const saveToDb = await step.run('saveToDb', async () => {
@@ -1212,7 +1704,7 @@ Please summarize and provide detailed information about the topic in markdown fo
         let data;
         try {
           data = await databases.updateDocument(DB_ID, CHATS_COLLECTION_ID, recordId, {
-            aiResp: aiResp,
+            aiResp: refinedAiResp,
             usedModel: usedModelName,
             modelApi: modelApi
           });
@@ -1226,7 +1718,7 @@ Please summarize and provide detailed information about the topic in markdown fo
       return {
         success: true,
         data: saveToDb,
-        aiResponseLength: aiResp?.length || 0,
+        aiResponseLength: refinedAiResp?.length || 0,
         recordId: recordId
       };
 

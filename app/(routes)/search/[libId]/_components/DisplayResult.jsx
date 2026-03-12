@@ -873,7 +873,7 @@ function DisplayResult({ searchInputRecord }) {
     }, [fetchSearchHistory, searchResult, pollingInterval, normalizeChatDocument, toBooleanValue]);
 
     // OPTIMIZATION: Memoized GenerateAIResp function
-    const GenerateAIResp = useCallback(async (formattedSearchResp, recordId, useDirectModel = false, overrideSearchInput = '') => {
+    const GenerateAIResp = useCallback(async (formattedSearchResp, recordId, useDirectModel = false, overrideSearchInput = '', responseMode = 'search') => {
         try {
             // console.log('Starting AI response generation for record ID:', recordId);
             
@@ -888,13 +888,21 @@ function DisplayResult({ searchInputRecord }) {
             }
 
             // console.log('Calling LLM model API...');
+            const responseProfile = {
+                detailLevel: 'detailed',
+                citationMode: 'enabled',
+                languageMode: 'auto'
+            };
+
             const result = await axios.post('/api/llm-model', {
                 searchInput: searchInput,
                 searchResult: formattedSearchResp,
                 recordId: recordId,
                 selectedModel: selectedModel,
                 isPro: isPro, // Pass user plan status for Auto model selection
-                useDirectModel: useDirectModel // Flag to indicate Google API failed, use direct model
+                useDirectModel: useDirectModel, // Flag to indicate Google API failed, use direct model
+                responseMode: responseMode === 'research' ? 'research' : 'search',
+                ...responseProfile
             });
 
             // console.log('LLM API response:', result.status, result.data);
@@ -908,103 +916,66 @@ function DisplayResult({ searchInputRecord }) {
                 throw new Error('No runId received from LLM API');
             }
 
-            // console.log('Starting status check for runId:', runId);
+            // Poll the database directly for aiResp.
+            // Previously this polled /api/get-inngest-status, which tried 4 Inngest REST
+            // endpoints × 5s timeout each = up to 20s per check, guaranteed to exceed the
+            // 10s client timeout (ECONNABORTED). Since Inngest writes aiResp to the DB when
+            // complete, polling the DB is faster, simpler, and always reliable.
 
             let statusCheckCount = 0;
-            const maxStatusChecks = 60; // Stop after 60 checks (about 5 minutes)
+            let consecutiveErrors = 0;
+            const maxStatusChecks = 90; // 90 × 2s = 3 min max wait
+            const maxConsecutiveErrors = 8; // Give up only if DB itself becomes unavailable
 
             const interval = setInterval(async () => {
                 statusCheckCount++;
-                
-                // Stop checking after max attempts
+
+                // Stop after max attempts
                 if (statusCheckCount > maxStatusChecks) {
-                    // console.log('Status check timeout reached, stopping...');
                     clearInterval(interval);
                     setLoadingSearch(false);
                     return;
                 }
 
                 try {
-                    // console.log(`Status check attempt ${statusCheckCount} for runId:`, runId);
-                    
-                    // Use the runId to check status
-                    const runResp = await axios.post('/api/get-inngest-status', 
-                        { runId: runId },
-                        { 
-                            headers: { 'Content-Type': 'application/json' },
-                            timeout: 10000 
-                        }
+                    const chatResp = await axios.get(
+                        `/api/search/chats?chatId=${encodeURIComponent(recordId)}`,
+                        { timeout: 8000 }
                     );
+                    consecutiveErrors = 0; // Reset on a successful round-trip
 
-                    // console.log('Status check response:', runResp.status, runResp.data);
-
-                    if (runResp?.data?.data?.[0]?.status == 'completed') {
-                        // console.log('AI response generation completed!');
+                    const chat = chatResp?.data?.chat;
+                    if (chat?.aiResp) {
                         clearInterval(interval);
-                        
-                        // CRITICAL FIX: Set loadingSearch to false BEFORE fetching updated data
-                        // This ensures UI updates immediately when response arrives
                         setLoadingSearch(false);
 
-                        // Refresh the search records to get the updated AI response
-                        // console.log('Refreshing search records...');
+                        // Update UI immediately with the retrieved response
+                        setSearchResult(prevResult => {
+                            if (prevResult?.Chats) {
+                                const updatedChats = prevResult.Chats.map(c =>
+                                    c.id === recordId ? { ...c, aiResp: chat.aiResp } : c
+                                );
+                                return { ...prevResult, Chats: updatedChats };
+                            }
+                            return prevResult;
+                        });
+                        setRefreshTrigger(prev => prev + 1);
+
+                        // Full library refresh for consistency
                         await GetSearchRecords();
-
-                        // Get updated Data from Db and update state immediately
-                        let updatedData = null;
-                        try {
-                            const updatedChatResp = await axios.get(`/api/search/chats?chatId=${encodeURIComponent(recordId)}`);
-                            updatedData = updatedChatResp?.data?.chat;
-                        } catch (fetchErr) {
-                            console.error('Error fetching updated chat data:', fetchErr);
-                        }
-
-                        if (updatedData && updatedData.aiResp) {
-                            // console.log('Updated chat data received:', updatedData);
-
-                            // Update the current searchResult state immediately for instant UI update
-                            setSearchResult(prevResult => {
-                                if (prevResult?.Chats) {
-                                    const updatedChats = prevResult.Chats.map(chat =>
-                                        chat.id === recordId ? { ...chat, aiResp: updatedData.aiResp } : chat
-                                    );
-                                    return { ...prevResult, Chats: updatedChats };
-                                }
-                                return prevResult;
-                            });
-
-                            // Trigger re-render with new timestamp to force update
-                            setRefreshTrigger(prev => prev + 1);
-
-                            // Then refresh the entire library to ensure consistency
-                            await GetSearchRecords();
-                        }
-                    } else if (runResp?.data?.data?.[0]?.status == 'failed') {
-                        // Handle failed status
-                        console.error('AI response generation failed');
-                        clearInterval(interval);
-                        setLoadingSearch(false);
-                        throw new Error('AI response generation failed');
-                    } else {
-                        // console.log(`AI generation still running, status: ${runResp?.data?.data?.[0]?.status || 'unknown'}`);
                     }
+                    // else: Inngest is still processing, keep polling
 
                 } catch (statusError) {
-                    console.error('Error checking status:', statusError);
-                    
-                    // If it's a specific JSON parsing error, stop trying
-                    if (statusError.message?.includes('JSON') || statusError.response?.status === 400) {
-                        console.error('Invalid request format, stopping status checks');
+                    consecutiveErrors++;
+                    // Only abort if the DB endpoint itself is consistently failing
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
                         clearInterval(interval);
                         setLoadingSearch(false);
-                        throw new Error('Invalid status check request format');
                     }
-                    
-                    // For other errors, continue trying but log them
-                    // console.log('Will retry status check...');
                 }
 
-            }, 2000); // Check every 2 seconds
+            }, 2000); // Poll every 2 seconds
 
         } catch (error) {
             console.error('Error generating AI response:', error);
@@ -1033,7 +1004,7 @@ function DisplayResult({ searchInputRecord }) {
             setLoadingSearch(false);
             throw error;
         }
-    }, [deferredUserInput, searchInputRecord, selectedModel, GetSearchRecords]);
+    }, [deferredUserInput, searchInputRecord, selectedModel, isPro, GetSearchRecords]);
 
     const refreshCachedChatResult = useCallback(async ({ searchInput, mode, chatId, previousAiResp = '' }) => {
         try {
@@ -1161,7 +1132,7 @@ function DisplayResult({ searchInputRecord }) {
                 ? `${searchInput}\n\nPrevious answer:\n${previousAiResp}\n\nProvide a new updated answer using latest available information.`
                 : searchInput;
 
-            await GenerateAIResp(formattedSearchResp, chatId, useDirectModel, refreshPrompt);
+            await GenerateAIResp(formattedSearchResp, chatId, useDirectModel, refreshPrompt, mode === 'research' ? 'research' : 'search');
             startPollingForUpdates();
         } catch (error) {
             console.error('Error refreshing cached response:', error);
@@ -1378,7 +1349,7 @@ function DisplayResult({ searchInputRecord }) {
                         const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
-                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true, '', 'research');
                         startPollingForUpdates();
                         await clearFileContextAfterSuccess();
                         setUserInput('');
@@ -1422,7 +1393,7 @@ function DisplayResult({ searchInputRecord }) {
                     // If the research API could not start synthesis (runId missing), fallback to client-side synthesis
                     if (!researchResp.runId) {
                         // console.log('🧪 Fallback: starting client-side synthesis since runId is missing');
-                        await GenerateAIResp(formattedSearchResp, insertedChat.$id);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, false, '', 'research');
                     }
 
                     // Start polling for AI response updates (either server-started or client fallback)
@@ -1470,7 +1441,7 @@ function DisplayResult({ searchInputRecord }) {
 
                         await GetSearchRecords();
                         // Pass flag to GenerateAIResp to use direct model call
-                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, true, '', 'search');
                         startPollingForUpdates();
                     } else if (!searchResp || !searchResp.categorizedResults) {
                         throw new Error('Invalid search response from Google Search API');
@@ -1498,7 +1469,7 @@ function DisplayResult({ searchInputRecord }) {
                         const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
-                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, false);
+                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, false, '', 'search');
                         startPollingForUpdates();
                     }
                 }

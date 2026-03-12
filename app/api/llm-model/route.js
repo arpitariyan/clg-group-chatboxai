@@ -7,7 +7,18 @@ export async function POST(req) {
     
     try {
         // console.log('LLM Model API called');
-        const { searchInput, searchResult, recordId: reqRecordId, selectedModel, isPro, useDirectModel } = await req.json();
+        const {
+            searchInput,
+            searchResult,
+            recordId: reqRecordId,
+            selectedModel,
+            isPro,
+            useDirectModel,
+            responseMode,
+            detailLevel,
+            citationMode,
+            languageMode
+        } = await req.json();
         recordId = reqRecordId; // Assign to outer scope variable
 
         // console.log('LLM Model API request data:', {
@@ -51,6 +62,10 @@ export async function POST(req) {
 
         let inngestRunId;
         try {
+            const normalizedDetailLevel = ['brief', 'balanced', 'detailed'].includes(detailLevel) ? detailLevel : 'detailed';
+            const normalizedCitationMode = ['enabled', 'auto', 'disabled'].includes(citationMode) ? citationMode : 'enabled';
+            const normalizedLanguageMode = ['auto', 'english', 'hindi', 'hinglish'].includes(languageMode) ? languageMode : 'auto';
+
             inngestRunId = await inngest.send({
                 name: "llm-model",
                 data: {
@@ -59,7 +74,11 @@ export async function POST(req) {
                     recordId: recordId,
                     selectedModel: finalSelectedModel,
                     isPro: isPro !== false, // Default to true for backward compatibility
-                    useDirectModel: useDirectModel === true // Flag indicating Google API failed
+                    useDirectModel: useDirectModel === true, // Flag indicating Google API failed
+                    responseMode: responseMode === 'research' ? 'research' : 'search',
+                    detailLevel: normalizedDetailLevel,
+                    citationMode: normalizedCitationMode,
+                    languageMode: normalizedLanguageMode
                 },
             });
         } catch (inngestError) {

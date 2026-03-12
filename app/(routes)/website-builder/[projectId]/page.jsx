@@ -20,16 +20,19 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
     const previewRef = useRef(null)
     const generationRequestedRef = useRef(false)
     const generationRetryStateRef = useRef({ attempts: 0, timer: null })
+    const hasShownGenerationErrorRef = useRef(false)
 
     const [project, setProject] = useState(null)
     const [loading, setLoading] = useState(true)
-    const [isGenerating, setIsGenerating] = useState(false)
+    const [isInitialGeneration, setIsInitialGeneration] = useState(false)
+    const [isRevisionPending, setIsRevisionPending] = useState(false)
     const [device, setDevice] = useState('desktop')
     const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
     const [showInsufficientModal, setShowInsufficientModal] = useState(false)
     const [showPurchaseModal, setShowPurchaseModal] = useState(false)
     const [isSidebarOpen, setIsSidebarOpen] = useState(false)
     const isMobile = useIsMobile()
+    const isGenerating = isInitialGeneration || isRevisionPending
 
     // Credit management
     const { credits, refreshCredits, hasCredits } = useCreditManager()
@@ -41,8 +44,44 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
         })
     }, [paramsPromise])
 
+    const applyProjectData = (nextProject, mergeWithCurrent = false) => {
+        if (!nextProject) {
+            return null
+        }
+
+        const mergedProject = mergeWithCurrent && project
+            ? { ...project, ...nextProject }
+            : nextProject
+
+        setProject(mergedProject)
+
+        const conversations = mergedProject?.conversations || []
+        const lastAssistantMessage = [...conversations]
+            .reverse()
+            .find((item) => item.role === 'assistant')
+
+        const hasGenerationError = Boolean(
+            !mergedProject.current_code &&
+            lastAssistantMessage?.content?.toLowerCase().includes('error generating your website')
+        )
+
+        setIsInitialGeneration(!mergedProject.current_code && !hasGenerationError)
+
+        if (hasGenerationError && !hasShownGenerationErrorRef.current) {
+            toast.error('Website generation failed. Please try again with a new prompt.')
+            hasShownGenerationErrorRef.current = true
+        }
+
+        if (!hasGenerationError) {
+            hasShownGenerationErrorRef.current = false
+        }
+
+        setLoading(false)
+        return mergedProject
+    }
+
     // Fetch project data
-    const fetchProject = async () => {
+    const fetchProject = async ({ suppressErrors = false } = {}) => {
         if (!projectId || !currentUser?.email) return
         
         try {
@@ -53,43 +92,30 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                 throw new Error(data.error || 'Failed to fetch project')
             }
 
-            setProject(data.project)
-            const conversations = data.project?.conversations || []
-            const lastAssistantMessage = [...conversations]
-                .reverse()
-                .find((item) => item.role === 'assistant')
-
-            const hasGenerationError = Boolean(
-                !data.project.current_code &&
-                lastAssistantMessage?.content?.toLowerCase().includes('error generating your website')
-            )
-
-            setIsGenerating(!data.project.current_code && !hasGenerationError)
-
-            if (hasGenerationError) {
-                toast.error('Website generation failed. Please try again with a new prompt.')
-            }
-            setLoading(false)
-            return data.project
+            return applyProjectData(data.project)
         } catch (error) {
             console.error('Error fetching project:', error)
-            toast.error(`Failed to load project: ${error.message}`)
+            if (!suppressErrors) {
+                toast.error(`Failed to load project: ${error.message}`)
+            }
             setLoading(false)
             return null
         }
     }
 
-    const waitForRevisionResult = async (previousVersionId, timeoutMs = 30000, intervalMs = 2500) => {
+    const waitForRevisionResult = async ({ expectedVersionId, previousVersionId, timeoutMs = 45000, intervalMs = 2000 }) => {
         const startedAt = Date.now()
 
         while (Date.now() - startedAt < timeoutMs) {
-            const updatedProject = await fetchProject()
-
-            if (
+            const updatedProject = await fetchProject({ suppressErrors: true })
+            const hasExpectedVersion = Boolean(
                 updatedProject?.current_version_id &&
-                updatedProject.current_version_id !== previousVersionId &&
-                updatedProject?.current_code
-            ) {
+                (expectedVersionId
+                    ? updatedProject.current_version_id === expectedVersionId
+                    : updatedProject.current_version_id !== previousVersionId)
+            )
+
+            if (hasExpectedVersion && updatedProject?.current_code) {
                 return { success: true, project: updatedProject }
             }
 
@@ -120,8 +146,22 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
         }
 
         try {
-            setIsGenerating(true)
+            setIsRevisionPending(true)
             const previousVersionId = project?.current_version_id
+
+            // Poll the project every 3 s WHILE the server is generating so that
+            // intermediate AI messages (enhanced prompt, "making changes…") appear
+            // in the sidebar chat in real time instead of all at once at the end.
+            let backgroundPollActive = true
+            const runBackgroundPoll = async () => {
+                while (backgroundPollActive) {
+                    await new Promise((r) => setTimeout(r, 3000))
+                    if (backgroundPollActive) {
+                        await fetchProject({ suppressErrors: true })
+                    }
+                }
+            }
+            runBackgroundPoll() // fire-and-forget; controlled by flag
 
             const response = await fetch(`/api/website-builder/revision/${projectId}`, {
                 method: 'POST',
@@ -134,6 +174,9 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                 }),
             })
 
+            // Stop intermediate polling — the final fetchProject below takes over.
+            backgroundPollActive = false
+
             const data = await response.json()
 
             if (!response.ok) {
@@ -143,26 +186,48 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                 } else {
                     toast.error(data.error || 'Failed to generate revision')
                 }
-                setIsGenerating(false)
+                setIsRevisionPending(false)
                 return false
             }
 
             await refreshCredits()
 
-            const revisionResult = await waitForRevisionResult(previousVersionId)
-            setIsGenerating(false)
+            // Apply the completed project from the API response immediately —
+            // this updates current_code so BuilderPreview can render the new site.
+            if (data?.project) {
+                applyProjectData(data.project, true)
+            }
+
+            // Dismiss the loading screen as soon as we have the new code.
+            // (BuilderPreview's useEffect will write it to the iframe once the
+            //  loading overlay unmounts and the iframe is back in the DOM.)
+            setIsRevisionPending(false)
+
+            if (data?.project?.current_code || data?.versionId) {
+                toast.success('Website updated!')
+                // Refresh in background to pull fresh conversations + versions list.
+                void fetchProject({ suppressErrors: true })
+                return true
+            }
+
+            // Fallback: Appwrite propagation may be slow — poll for the new version.
+            const revisionResult = await waitForRevisionResult({
+                expectedVersionId: data?.versionId,
+                previousVersionId,
+                timeoutMs: 20000,
+            })
 
             if (revisionResult.success) {
                 toast.success('Website updated!')
                 return true
             }
 
-            toast.info('Revision request accepted. Update is taking longer than expected; it should appear shortly.')
+            toast.error('The revision finished on the server, but the latest version could not be loaded. Please refresh.')
             return false
         } catch (error) {
             console.error('Error generating revision:', error)
             toast.error(`Failed to update website: ${error.message}`)
-            setIsGenerating(false)
+            setIsRevisionPending(false)
             return false
         }
     }
@@ -179,7 +244,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
         }
 
         generationRequestedRef.current = true
-        setIsGenerating(true)
+        setIsInitialGeneration(true)
 
         try {
             const response = await fetch('/api/website-builder/generate', {
@@ -209,7 +274,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
             }
             generationRetryStateRef.current.attempts = 0
 
-            await fetchProject()
+            await fetchProject({ suppressErrors: true })
             toast.success('Website generated successfully!')
         } catch (error) {
             generationRequestedRef.current = false
@@ -238,7 +303,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                 return
             }
 
-            setIsGenerating(false)
+            setIsInitialGeneration(false)
             toast.error(`Website generation failed: ${error.message}`)
         }
     }
@@ -251,18 +316,8 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
             return
         }
 
-        fetchProject()
-
-        // If generating, poll for updates
-        let pollInterval
-        if (isGenerating && !project?.current_code) {
-            pollInterval = setInterval(fetchProject, 10000)
-        }
-
-        return () => {
-            if (pollInterval) clearInterval(pollInterval)
-        }
-    }, [currentUser, projectId, router])
+        void fetchProject()
+    }, [currentUser?.email, projectId, router])
 
     useEffect(() => {
         return () => {
@@ -293,16 +348,19 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
 
     // Poll while generating
     useEffect(() => {
-        if (project && !project.current_code) {
-            const pollInterval = setInterval(fetchProject, 10000)
+        if (isInitialGeneration && !project?.current_code) {
+            const pollInterval = setInterval(() => {
+                void fetchProject({ suppressErrors: true })
+            }, 10000)
             return () => clearInterval(pollInterval)
         }
-    }, [project])
+    }, [isInitialGeneration, project?.current_code, projectId, currentUser?.email])
 
     useEffect(() => {
         if (project && !project.current_code && currentUser?.email) {
             triggerInitialGeneration(project)
         } else if (project?.current_code) {
+            setIsInitialGeneration(false)
             generationRetryStateRef.current.attempts = 0
             if (generationRetryStateRef.current.timer) {
                 clearTimeout(generationRetryStateRef.current.timer)
@@ -393,6 +451,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                         ref={previewRef}
                         project={project}
                         isGenerating={isGenerating}
+                        isRevisionPending={isRevisionPending}
                         device={device}
                         onChangeDetected={() => setHasUnsavedChanges(true)}
                     />

@@ -341,7 +341,7 @@ function DisplaySummery({
         ),
 
         p: ({ node, ...props }) => (
-            <p className="text-[0.9375rem] leading-[1.85] text-gray-700 dark:text-zinc-300 mb-4 last:mb-0 break-words" {...props} />
+            <p className="text-[0.9375rem] leading-[1.85] text-gray-700 dark:text-zinc-300 mb-4 last:mb-0 wrap-break-word" {...props} />
         ),
 
         a: ({ node, href, children, ...props }) => (
@@ -355,7 +355,7 @@ function DisplaySummery({
             <ol className="my-3 ml-5 space-y-1.5 text-[0.9375rem] text-gray-700 dark:text-zinc-300 list-decimal marker:font-medium marker:text-gray-500 dark:marker:text-zinc-500" {...props} />
         ),
         li: ({ node, ...props }) => (
-            <li className="leading-[1.75] pl-0.5 break-words" {...props} />
+            <li className="leading-[1.75] pl-0.5 wrap-break-word" {...props} />
         ),
 
         blockquote: ({ node, ...props }) => (
@@ -384,7 +384,7 @@ function DisplaySummery({
             <tr className="hover:bg-gray-50/80 dark:hover:bg-zinc-800/50 transition-colors duration-100" {...props} />
         ),
         td: ({ node, ...props }) => (
-            <td className="px-4 py-2.5 align-top break-words" {...props} />
+            <td className="px-4 py-2.5 align-top wrap-break-word" {...props} />
         ),
 
         code: ({ node, className, children, ...props }) => {
@@ -397,7 +397,7 @@ function DisplaySummery({
 
             return (
                 <code
-                    className="px-[5px] py-[2px] mx-[2px] rounded-[5px]
+                    className="px-1.25 py-0.5 mx-0.5 rounded-[5px]
                                text-[0.8125rem] font-mono leading-normal
                                bg-gray-100 dark:bg-zinc-800
                                text-rose-600 dark:text-rose-400

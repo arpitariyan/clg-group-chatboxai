@@ -9,24 +9,53 @@ export default function BuilderSidebar({ project, isGenerating, onRevision, user
     const [input, setInput] = useState('')
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [expandedMessages, setExpandedMessages] = useState(new Map())
+    const [optimisticMessages, setOptimisticMessages] = useState([])
 
     const handleSubmit = async (e) => {
         e.preventDefault()
-        if (!input.trim() || isSubmitting) return
+        if (!input.trim() || isSubmitting || isGenerating) return
+
+        const messageText = input.trim()
+        const tempId = `opt-${Date.now()}`
+
+        // Immediately show the message and clear the input — don't wait for the API.
+        setOptimisticMessages(prev => [...prev, {
+            id: tempId,
+            $id: tempId,
+            role: 'user',
+            content: messageText,
+            type: 'message',
+            created_at: new Date().toISOString()
+        }])
+        setInput('')
 
         setIsSubmitting(true)
         try {
-            const shouldClear = await onRevision(input)
-            if (shouldClear !== false) {
-                setInput('')
+            const result = await onRevision(messageText)
+            if (result === false) {
+                // Pre-flight check failed (no credits, etc.) — undo the optimistic message.
+                setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
+                setInput(messageText)
             }
         } catch (error) {
             console.error('Error submitting revision:', error)
             toast.error('Failed to submit revision')
+            setOptimisticMessages(prev => prev.filter(m => m.id !== tempId))
+            setInput(messageText)
         } finally {
             setIsSubmitting(false)
         }
     }
+
+    // Drop optimistic entries once the server conversation contains them.
+    React.useEffect(() => {
+        if (optimisticMessages.length === 0) return
+        const conversations = project?.conversations || []
+        const allConfirmed = optimisticMessages.every(optMsg =>
+            conversations.some(c => c.role === 'user' && c.content === optMsg.content)
+        )
+        if (allConfirmed) setOptimisticMessages([])
+    }, [project?.conversations])
 
     const handleRollback = async (versionId) => {
         try {
@@ -90,18 +119,24 @@ export default function BuilderSidebar({ project, isGenerating, onRevision, user
         return aTime - bTime
     })
 
+    // Only show optimistic messages not yet confirmed by the server.
+    const pendingOptimistic = optimisticMessages.filter(optMsg =>
+        !timeline.some(t => t.type === 'message' && t.role === 'user' && t.content === optMsg.content)
+    )
+    const fullTimeline = [...timeline, ...pendingOptimistic]
+
     React.useEffect(() => {
         if (messageRef.current) {
             messageRef.current?.scrollIntoView({ behavior: 'smooth' })
         }
-    }, [timeline.length, isGenerating])
+    }, [fullTimeline.length, isGenerating])
 
     return (
         <div className="h-full w-full bg-gray-900 border-gray-800 transition-all overflow-hidden dark:bg-[oklch(0.2478_0_0)]">
             <div className="flex flex-col h-full">
                 {/* Messages container */}
             <div className="flex-1 overflow-y-auto no-scrollbar px-2.5 sm:px-3 flex flex-col gap-4 pt-4">
-                    {timeline.map((item, index) => {
+                    {fullTimeline.map((item, index) => {
                         if (item.type === 'message') {
                             const isUser = item.role === 'user'
                             const messageId = item.id || item.$id || index

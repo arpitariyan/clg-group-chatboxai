@@ -60,62 +60,61 @@ export async function POST(req) {
             );
         }
 
-        // Try different endpoints for Inngest status checking
+        // Only try the two most likely endpoints with short timeouts.
+        // Previously 4 endpoints × 5s = up to 20s per request, which exceeded
+        // the 10s client timeout and caused ECONNABORTED on every poll cycle.
         const endpoints = [
             `/v1/runs/${runId}`,
-            `/v1/events/${runId}/runs`,
-            `/v1/functions/runs/${runId}`,
-            `/api/v1/runs/${runId}`
+            `/v1/events/${runId}/runs`
         ];
+
+        const headers = {
+            'Content-Type': 'application/json'
+        };
+        if (inngestApiKey) {
+            headers['Authorization'] = `Bearer ${inngestApiKey}`;
+        } else if (inngestEventKey) {
+            headers['X-Inngest-Event-Key'] = inngestEventKey;
+        }
 
         let lastError = null;
         
         for (const endpoint of endpoints) {
             try {
-                // console.log(`Trying endpoint: ${inngestHost}${endpoint}`);
-                
-                const headers = {
-                    'Content-Type': 'application/json'
-                };
-                
-                // Use either API key (preferred for REST API) or event key
-                if (inngestApiKey) {
-                    headers['Authorization'] = `Bearer ${inngestApiKey}`;
-                } else if (inngestEventKey) {
-                    headers['X-Inngest-Event-Key'] = inngestEventKey;
-                }
-
                 const result = await axios.get(`${inngestHost}${endpoint}`, {
-                    headers: headers,
-                    timeout: 5000 // 5 second timeout
+                    headers,
+                    timeout: 2500 // 2.5s each — 2 endpoints × 2.5s = 5s max, well under client timeout
                 });
 
-                // console.log('Successfully fetched status from endpoint:', endpoint);
-                // console.log('Status response:', result.status, result.data);
-                
                 return NextResponse.json(result.data);
 
             } catch (endpointError) {
-                console.warn(`Endpoint ${endpoint} failed:`, endpointError.response?.status || endpointError.message);
+                const status = endpointError.response?.status;
+                // Auth failures are permanent — stop immediately
+                if (status === 401 || status === 403) {
+                    lastError = endpointError;
+                    break;
+                }
                 lastError = endpointError;
-                continue; // Try next endpoint
+                continue;
             }
         }
 
-        // If all endpoints failed, handle the last error
-        console.error('All Inngest endpoints failed, last error:', lastError);
-        
-        if (lastError?.code === 'ECONNREFUSED') {
-            return NextResponse.json(
-                { 
-                    error: 'Inngest server is not running or unreachable',
-                    details: 'Please ensure Inngest is properly configured and running',
-                    runId: runId
-                }, 
-                { status: 503 }
-            );
+        // If the Inngest server is unreachable (connection error, timeout, 404 "not yet indexed"),
+        // return a safe "Running" status so the client keeps polling rather than crashing.
+        const isConnectionError =
+            !lastError?.response ||
+            lastError?.code === 'ECONNREFUSED' ||
+            lastError?.code === 'ECONNABORTED' ||
+            lastError?.code === 'ETIMEDOUT' ||
+            lastError?.response?.status === 404;
+
+        if (isConnectionError) {
+            return NextResponse.json({ data: [{ status: 'Running' }] });
         }
-        
+
+        // Auth failures (401/403) are the only remaining error case here.
+        // Connection errors, timeouts, and 404s are handled above by isConnectionError.
         if (lastError?.response) {
             const status = lastError.response.status;
             let errorMessage = `Inngest server error: ${status} ${lastError.response.statusText}`;
