@@ -291,6 +291,12 @@ export const AIModelsOption = [
 ]
 
 const VERIFIED_FREE_CODING_MODEL = 'z-ai/glm-4.5-air:free';
+const TEMP_UNSTABLE_MODELS = new Set([
+    'liquid/lfm-2.5-1.2b-instruct:free',
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'google/gemma-3n-e4b-it:free',
+    'google/gemma-3-4b-it:free',
+]);
 
 function getPreferredFreeCodingModel() {
     return AIModelsOption.find((model) => model.modelApi === VERIFIED_FREE_CODING_MODEL) || null;
@@ -327,6 +333,12 @@ export function resolveModel(selectedModel, isPro = true) {
     if (!selectedModel || selectedModel.modelApi === 'auto') {
         return getRandomModel(isPro);
     }
+
+    if (selectedModel?.modelApi && TEMP_UNSTABLE_MODELS.has(selectedModel.modelApi)) {
+        const fallback = getPreferredFreeCodingModel() || getRandomModel(isPro);
+        return fallback;
+    }
+
     return selectedModel;
 }
 

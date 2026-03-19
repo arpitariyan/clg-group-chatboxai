@@ -4,6 +4,169 @@ import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { checkResearchLimit } from '@/lib/planUtils-server';
 
+const STOP_WORDS = new Set([
+    'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'by', 'is', 'are', 'was',
+    'were', 'be', 'as', 'at', 'from', 'that', 'this', 'it', 'its', 'their', 'your', 'you', 'about'
+]);
+
+const DOMAIN_HINTS = {
+    engineering: ['api', 'code', 'software', 'architecture', 'debug', 'performance', 'javascript', 'python', 'react', 'node'],
+    business: ['pricing', 'market', 'revenue', 'startup', 'roi', 'strategy', 'customer', 'sales'],
+    health: ['health', 'medical', 'clinical', 'treatment', 'disease', 'patient'],
+    legal: ['law', 'legal', 'regulation', 'compliance', 'policy', 'contract'],
+    finance: ['finance', 'investment', 'stock', 'valuation', 'budget', 'cost']
+};
+
+function tokenize(text = '') {
+    return String(text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(token => token && !STOP_WORDS.has(token));
+}
+
+function keywordOverlapScore(left = '', right = '') {
+    const leftTokens = new Set(tokenize(left));
+    if (!leftTokens.size) return 0;
+    const rightTokens = new Set(tokenize(right));
+    let overlap = 0;
+    leftTokens.forEach(token => {
+        if (rightTokens.has(token)) overlap += 1;
+    });
+    return overlap / leftTokens.size;
+}
+
+function detectQueryIntent(mainPrompt = '') {
+    const normalized = String(mainPrompt || '').toLowerCase();
+    const tokenCount = tokenize(normalized).length;
+
+    const isComparison = /(compare|vs\.?|difference|better|best)/i.test(normalized);
+    const isHowTo = /(how to|build|implement|setup|step by step)/i.test(normalized);
+    const isDecision = /(choose|recommend|should i|which one)/i.test(normalized);
+
+    let intent = 'inform';
+    if (isComparison) intent = 'compare';
+    else if (isHowTo) intent = 'build';
+    else if (isDecision) intent = 'decision';
+
+    let depth = 'standard';
+    if (tokenCount >= 14 || /(deep|comprehensive|detailed|expert)/i.test(normalized)) {
+        depth = 'deep';
+    } else if (tokenCount <= 6) {
+        depth = 'quick';
+    }
+
+    let domain = 'general';
+    for (const [candidate, keywords] of Object.entries(DOMAIN_HINTS)) {
+        if (keywords.some(keyword => normalized.includes(keyword))) {
+            domain = candidate;
+            break;
+        }
+    }
+
+    return { intent, depth, domain, tokenCount };
+}
+
+function buildResearchPlan(mainPrompt = '', queryAnalysis = {}) {
+    const basePlans = [
+        { angle: 'core', query: mainPrompt, basePriority: 1.0 },
+        { angle: 'overview', query: `comprehensive overview of ${mainPrompt}`, basePriority: 0.92 },
+        { angle: 'latest', query: `latest developments and updates on ${mainPrompt}`, basePriority: 0.88 },
+        { angle: 'expert', query: `expert analysis of ${mainPrompt}`, basePriority: 0.86 },
+        { angle: 'data', query: `statistics, data, and benchmarks for ${mainPrompt}`, basePriority: 0.9 },
+        { angle: 'examples', query: `case studies and real-world examples of ${mainPrompt}`, basePriority: 0.82 },
+        { angle: 'implementation', query: `best practices and implementation patterns for ${mainPrompt}`, basePriority: 0.84 },
+        { angle: 'risks', query: `challenges, risks, and mitigation for ${mainPrompt}`, basePriority: 0.83 },
+        { angle: 'future', query: `future trends and outlook for ${mainPrompt}`, basePriority: 0.8 },
+        { angle: 'history', query: `historical context and evolution of ${mainPrompt}`, basePriority: 0.72 }
+    ];
+
+    const intentBoostMap = {
+        compare: { data: 0.08, expert: 0.06, risks: 0.05 },
+        build: { implementation: 0.1, risks: 0.07, examples: 0.05 },
+        decision: { data: 0.09, risks: 0.08, expert: 0.07 },
+        inform: { overview: 0.04, latest: 0.04 }
+    };
+
+    const domainBoostMap = {
+        engineering: { implementation: 0.08, risks: 0.06, data: 0.03 },
+        business: { data: 0.07, examples: 0.06, future: 0.03 },
+        health: { latest: 0.08, risks: 0.07, data: 0.04 },
+        legal: { risks: 0.09, history: 0.05, expert: 0.05 },
+        finance: { data: 0.1, risks: 0.07, future: 0.04 }
+    };
+
+    const intentBoosts = intentBoostMap[queryAnalysis.intent] || {};
+    const domainBoosts = domainBoostMap[queryAnalysis.domain] || {};
+
+    return basePlans.map((plan, idx) => {
+        const overlap = keywordOverlapScore(mainPrompt, plan.query);
+        const intentBoost = intentBoosts[plan.angle] || 0;
+        const domainBoost = domainBoosts[plan.angle] || 0;
+        const depthBoost = queryAnalysis.depth === 'deep' ? 0.03 : 0;
+        const priority = Number((plan.basePriority + overlap * 0.2 + intentBoost + domainBoost + depthBoost).toFixed(3));
+        return {
+            ...plan,
+            priority,
+            index: idx + 1
+        };
+    }).sort((a, b) => b.priority - a.priority);
+}
+
+function canonicalizeUrl(url = '') {
+    try {
+        const parsed = new URL(url);
+        parsed.hash = '';
+        const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid'];
+        trackingParams.forEach(param => parsed.searchParams.delete(param));
+        return parsed.toString().replace(/\/$/, '');
+    } catch {
+        return String(url || '').trim();
+    }
+}
+
+function getDomain(url = '') {
+    try {
+        return new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+        return '';
+    }
+}
+
+function calculateSourceQualityScore(item = {}, originalQuery = '') {
+    const url = item?.link || item?.url || '';
+    const domain = getDomain(url);
+    const snippet = String(item?.snippet || item?.description || '');
+    const overlap = keywordOverlapScore(originalQuery, snippet) * 20;
+
+    let score = 40 + overlap;
+
+    if (/\.(gov|edu)$/i.test(domain)) score += 20;
+    else if (/(wikipedia|nature|arxiv|forbes|harvard|mit|who\.int|oecd|worldbank)/i.test(domain)) score += 12;
+
+    const publishDateRaw = item?.pagemap?.metatags?.[0]?.['article:published_time'];
+    if (publishDateRaw) {
+        const publishedAt = new Date(publishDateRaw).getTime();
+        if (!Number.isNaN(publishedAt)) {
+            const daysOld = (Date.now() - publishedAt) / (1000 * 60 * 60 * 24);
+            if (daysOld <= 30) score += 12;
+            else if (daysOld <= 180) score += 8;
+            else if (daysOld <= 365) score += 5;
+            else if (daysOld > 1825) score -= 6;
+        }
+    }
+
+    if (/(forum|reddit|quora|medium\.com\/u\/)/i.test(domain)) score -= 4;
+    if (!snippet || snippet.length < 40) score -= 5;
+
+    const bounded = Math.max(0, Math.min(100, Math.round(score)));
+    let band = 'medium';
+    if (bounded >= 75) band = 'high';
+    else if (bounded < 45) band = 'low';
+
+    return { score: bounded, band, domain };
+}
+
 /**
  * Deep Research API - Comprehensive Research Engine
  * 
@@ -17,27 +180,20 @@ import { checkResearchLimit } from '@/lib/planUtils-server';
 
 // Generate diverse research queries from the main prompt
 function generateResearchQueries(mainPrompt) {
-    const querySet = new Set([
-        mainPrompt,
-        `comprehensive overview of ${mainPrompt}`,
-        `latest developments and updates on ${mainPrompt}`,
-        `expert analysis of ${mainPrompt}`,
-        `statistics, data, and benchmarks for ${mainPrompt}`,
-        `case studies and real-world examples of ${mainPrompt}`,
-        `best practices and implementation patterns for ${mainPrompt}`,
-        `challenges, risks, and mitigation for ${mainPrompt}`,
-        `future trends and outlook for ${mainPrompt}`,
-        `historical context and evolution of ${mainPrompt}`
-    ]);
-
-    return Array.from(querySet);
+    const queryAnalysis = detectQueryIntent(mainPrompt);
+    const rankedPlan = buildResearchPlan(mainPrompt, queryAnalysis);
+    return {
+        queryAnalysis,
+        rankedPlan,
+        queries: rankedPlan.map(item => item.query)
+    };
 }
 
 // Deduplicate sources by URL
 function deduplicateSources(sources) {
     const seen = new Set();
     return sources.filter(source => {
-        const url = source?.link || source?.url;
+        const url = canonicalizeUrl(source?.link || source?.url);
         if (!url || seen.has(url)) return false;
         seen.add(url);
         return true;
@@ -45,14 +201,15 @@ function deduplicateSources(sources) {
 }
 
 // Format sources for consistent structure (basic initial mapping)
-function formatSources(sources) {
-    return sources.map((item, index) => {
+function formatSources(sources, originalQuery = '') {
+    const withQuality = sources.map((item, index) => {
         const url = item?.link || item?.url || '';
+        const quality = calculateSourceQualityScore(item, originalQuery);
         return {
             id: index + 1,
             title: item?.title || 'Untitled',
             description: item?.snippet || item?.description || '',
-            url,
+            url: canonicalizeUrl(url),
             displayLink: item?.displayLink || item?.name || '',
             thumbnail: item?.pagemap?.cse_thumbnail?.[0]?.src ||
                 item?.pagemap?.imageobject?.[0]?.url ||
@@ -62,11 +219,52 @@ function formatSources(sources) {
             metadata: {
                 author: item?.pagemap?.person?.[0]?.name || '',
                 publishDate: item?.pagemap?.metatags?.[0]?.['article:published_time'] || '',
-                type: item?.pagemap?.metatags?.[0]?.['og:type'] || 'article'
+                type: item?.pagemap?.metatags?.[0]?.['og:type'] || 'article',
+                qualityScore: quality.score,
+                qualityBand: quality.band,
+                sourceHost: quality.domain
             },
+            qualityScore: quality.score,
+            qualityBand: quality.band,
+            sourceHost: quality.domain,
             deepResearch: true // marker used by frontend
-        }
+        };
     });
+
+    return withQuality.sort((a, b) => {
+        if (b.qualityScore === a.qualityScore) return a.id - b.id;
+        return b.qualityScore - a.qualityScore;
+    });
+}
+
+function createFollowUpSuggestions(queryAnalysis, originalQuery) {
+    const topic = String(originalQuery || '').trim();
+    const defaults = [
+        `What are the biggest trade-offs in ${topic}?`,
+        `What would a practical implementation roadmap for ${topic} look like?`,
+        `What could go wrong with ${topic}, and how can we mitigate it?`,
+        `What changed recently in ${topic} that matters most?`
+    ];
+
+    if (queryAnalysis.intent === 'compare') {
+        return [
+            `Create a decision matrix to compare options for ${topic}`,
+            `Which option is best for low budget vs enterprise scale in ${topic}?`,
+            `What hidden costs appear when comparing ${topic}?`,
+            `What are long-term risks in each option related to ${topic}?`
+        ];
+    }
+
+    if (queryAnalysis.intent === 'build') {
+        return [
+            `Give a step-by-step build plan for ${topic}`,
+            `What architecture is recommended for production ${topic}?`,
+            `What testing and monitoring strategy should be used for ${topic}?`,
+            `What security and reliability pitfalls should be avoided in ${topic}?`
+        ];
+    }
+
+    return defaults;
 }
 
 // Fetch and extract page content (best effort, lightweight)
@@ -220,6 +418,12 @@ COMPREHENSIVE RESEARCH REQUIREMENTS:
     - Avoid unsupported claims; if evidence is weak, explicitly state uncertainty
     - Distinguish facts, interpretations, and projections
 
+11. CONSENSUS VS CONTRADICTIONS
+    - Add a section: "Consensus and Contradictions"
+    - Clearly list where sources agree and where they conflict
+    - For each major conclusion, include confidence labels: High / Medium / Low
+    - Confidence should be based on source quality, recency, and agreement breadth
+
 CRITICAL INSTRUCTIONS:
 - Make the research DETAILED and COMPREHENSIVE, not brief
 - Include specific numbers, statistics, and data points where available
@@ -232,6 +436,7 @@ CRITICAL INSTRUCTIONS:
 
 export async function POST(request) {
     try {
+        const requestStartAt = Date.now();
         const body = await request.json();
         const {
             searchInput,
@@ -267,6 +472,8 @@ export async function POST(request) {
                     error: 'RESEARCH_LIMIT_REACHED',
                     message: researchLimit.message,
                     remaining: researchLimit.remaining,
+                    weeklyCount: researchLimit.weeklyCount,
+                    weeklyLimit: researchLimit.weeklyLimit,
                     monthlyCount: researchLimit.monthlyCount,
                     monthlyLimit: researchLimit.monthlyLimit,
                     plan: researchLimit.plan
@@ -307,9 +514,19 @@ export async function POST(request) {
         }
 
         // Step 1: Generate diverse research queries
-        const researchQueries = includeDiversity
+        const planningStartAt = Date.now();
+        const queryPlanData = includeDiversity
             ? generateResearchQueries(searchInput)
-            : [searchInput];
+            : {
+                queryAnalysis: detectQueryIntent(searchInput),
+                rankedPlan: [{ query: searchInput, angle: 'core', priority: 1, index: 1 }],
+                queries: [searchInput]
+            };
+
+        const queryBatchSize = 7;
+        const selectedPlan = queryPlanData.rankedPlan.slice(0, queryBatchSize);
+        const selectedQueries = selectedPlan.map(item => item.query);
+        const planningDurationMs = Date.now() - planningStartAt;
 
         // console.log(`📝 Generated ${researchQueries.length} research angles`);
 
@@ -319,8 +536,8 @@ export async function POST(request) {
         const baseUrl = `${protocol}://${host}`;
 
         // Step 2: Execute searches in parallel
-        const queryBatchSize = 7;
-        const searchPromises = researchQueries.slice(0, queryBatchSize).map(async (query) => {
+        const retrievalStartAt = Date.now();
+        const searchPromises = selectedQueries.map(async (query) => {
             try {
                 const response = await axios.post(
                     `${baseUrl}/api/google-search-api`,
@@ -347,13 +564,16 @@ export async function POST(request) {
 
         const searchResults = await Promise.all(searchPromises);
         const allSources = searchResults.flat();
+        const retrievalDurationMs = Date.now() - retrievalStartAt;
 
         // console.log(`📚 Total sources collected: ${allSources.length}`);
 
         // Step 3: Deduplicate and format sources
+        const rankingStartAt = Date.now();
         const uniqueSources = deduplicateSources(allSources);
         const normalizedMaxSources = Math.max(8, Math.min(Number(maxSources) || 20, 30));
-        const formattedSources = formatSources(uniqueSources).slice(0, normalizedMaxSources);
+        const formattedSources = formatSources(uniqueSources, searchInput).slice(0, normalizedMaxSources);
+        const rankingDurationMs = Date.now() - rankingStartAt;
 
         // console.log(`🎯 Unique sources after deduplication: ${formattedSources.length}`);
 
@@ -364,35 +584,14 @@ export async function POST(request) {
         if (!googleApiUsed) {
             console.warn('⚠️ No sources found for research, using direct AI model');
 
-            let runId = null;
-            try {
-                const fallbackPrompt = createNoSourceResearchPrompt(searchInput);
-                const llmResponse = await axios.post(
-                    `${baseUrl}/api/llm-model`,
-                    {
-                        searchInput: fallbackPrompt,
-                        searchResult: [],
-                        recordId: 'research-' + Date.now(),
-                        selectedModel: normalizedSelectedModel,
-                        isPro: true,
-                        useDirectModel: true,
-                        responseMode: 'research'
-                    },
-                    {
-                        headers: { 'Content-Type': 'application/json' },
-                        timeout: 30000
-                    }
-                );
-                runId = llmResponse.data;
-            } catch (fallbackErr) {
-                console.warn('⚠️ Could not start no-source research synthesis:', fallbackErr?.message || fallbackErr);
-            }
+            const runId = null;
 
             return NextResponse.json({
                 success: true,
                 googleApiUsed: false,
                 useDirectModel: true,
                 runId,
+                synthesisDeferredToClient: true,
                 sources: [],
                 searchResult: [],
                 metadata: {
@@ -400,7 +599,16 @@ export async function POST(request) {
                     uniqueSources: 0,
                     queriesExecuted: 0,
                     researchDepth: 'direct_model',
-                    enrichedSources: 0
+                    enrichedSources: 0,
+                    queryAnalysis: queryPlanData.queryAnalysis,
+                    plannedAngles: selectedPlan,
+                    followUpSuggestions: createFollowUpSuggestions(queryPlanData.queryAnalysis, searchInput),
+                    phaseDurationsMs: {
+                        planning: planningDurationMs,
+                        retrieval: retrievalDurationMs,
+                        ranking: rankingDurationMs,
+                        total: Date.now() - requestStartAt
+                    }
                 }
             });
         }
@@ -410,6 +618,7 @@ export async function POST(request) {
 
         // Step 5: Enrich sources with page content & heuristic summaries (limit to first 8 to control cost)
         // console.log('📄 Fetching page contents for deep enrichment...');
+        const enrichmentStartAt = Date.now();
         const enrichmentTargets = formattedSources.slice(0, 12);
         await Promise.allSettled(
             enrichmentTargets.map(async (src) => {
@@ -421,51 +630,51 @@ export async function POST(request) {
                 src.contentLength = content.length;
             })
         );
+        const enrichmentDurationMs = Date.now() - enrichmentStartAt;
 
-        // Step 6: Initiate synthesis (best effort) using enriched sources
-        // console.log('🤖 Initiating AI synthesis...');
-        let runId = null;
-        try {
-            const llmResponse = await axios.post(
-                `${baseUrl}/api/llm-model`,
-                {
-                    searchInput: researchPrompt,
-                    searchResult: formattedSources.map(s => ({
-                        title: s.title,
-                        url: s.url,
-                        description: s.description,
-                        summary: s.summary,
-                        keyPoints: s.keyPoints
-                    })),
-                    recordId: 'research-' + Date.now(), // Generate a temporary ID for research
-                    selectedModel: normalizedSelectedModel,
-                    isPro: true, // This will be handled on the frontend with actual user plan
-                    responseMode: 'research'
-                },
-                {
-                    headers: { 'Content-Type': 'application/json' },
-                    timeout: 30000
-                }
-            );
-            runId = llmResponse.data;
-            // console.log('📊 AI synthesis initiated with runId:', runId);
-        } catch (e) {
-            console.warn('⚠️ Synthesis failed, continuing without runId:', e.message);
-        }
+        // Step 6: Do NOT initiate synthesis here.
+        // Reason: API layer does not yet have the real chat recordId; starting Inngest with
+        // a temporary ID causes DB updates to miss the actual chat row and the UI keeps polling.
+        // The client starts /api/llm-model after creating the real chat row.
+        const runId = null;
+        const synthesisDispatchDurationMs = 0;
+
+        const qualityScores = formattedSources.map(src => src.qualityScore || 0);
+        const avgQuality = qualityScores.length
+            ? Math.round(qualityScores.reduce((sum, value) => sum + value, 0) / qualityScores.length)
+            : 0;
+        const highConfidenceSources = formattedSources.filter(src => src.qualityBand === 'high').length;
+        const followUpSuggestions = createFollowUpSuggestions(queryPlanData.queryAnalysis, searchInput);
 
         // Return enriched sources immediately
         return NextResponse.json({
             success: true,
             googleApiUsed: true,
             runId,
+            synthesisDeferredToClient: true,
             sources: formattedSources,
             searchResult: formattedSources,
             metadata: {
                 totalSourcesFound: allSources.length,
                 uniqueSources: formattedSources.length,
-                queriesExecuted: researchQueries.slice(0, queryBatchSize).length,
+                queriesExecuted: selectedQueries.length,
                 researchDepth: 'comprehensive',
-                enrichedSources: enrichmentTargets.length
+                enrichedSources: enrichmentTargets.length,
+                queryAnalysis: queryPlanData.queryAnalysis,
+                plannedAngles: selectedPlan,
+                followUpSuggestions,
+                qualitySummary: {
+                    averageSourceQuality: avgQuality,
+                    highConfidenceSources
+                },
+                phaseDurationsMs: {
+                    planning: planningDurationMs,
+                    retrieval: retrievalDurationMs,
+                    ranking: rankingDurationMs,
+                    enrichment: enrichmentDurationMs,
+                    synthesisDispatch: synthesisDispatchDurationMs,
+                    total: Date.now() - requestStartAt
+                }
             }
         });
 

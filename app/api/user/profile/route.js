@@ -23,6 +23,41 @@ function buildDefaultUser({ email, name }) {
   };
 }
 
+async function listUsersByEmail(email) {
+  // Some Appwrite setups may reject mixed filter+sort queries when indexes differ.
+  // Try the optimized query first, then fall back to a broader query and sort locally.
+  try {
+    return await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', email),
+      Query.orderDesc('$updatedAt'),
+      Query.limit(10),
+    ]);
+  } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    const shouldFallback =
+      message.includes('index') ||
+      message.includes('invalid query') ||
+      message.includes('attribute not found') ||
+      message.includes('order') ||
+      message.includes('query');
+
+    if (!shouldFallback) throw error;
+
+    return databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
+      Query.equal('email', email),
+      Query.limit(100),
+    ]);
+  }
+}
+
+function sortByUpdatedAtDesc(documents = []) {
+  return [...documents].sort((a, b) => {
+    const aTime = new Date(a?.$updatedAt || 0).getTime() || 0;
+    const bTime = new Date(b?.$updatedAt || 0).getTime() || 0;
+    return bTime - aTime;
+  });
+}
+
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -34,13 +69,8 @@ export async function GET(request) {
       return NextResponse.json({ error: 'email is required' }, { status: 400 });
     }
 
-    const res = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', email),
-      Query.orderDesc('$updatedAt'),
-      Query.limit(10), // fetch up to 10 to handle duplicates gracefully
-    ]);
-
-    const allDocs = res.documents || [];
+    const res = await listUsersByEmail(email);
+    const allDocs = sortByUpdatedAtDesc(res?.documents || []).slice(0, 10);
 
     // Default to the first (most recently updated) or one with MFA explicitly on
     let user = allDocs.find(doc => doc.mfa_enabled === true) || allDocs[0] || null;

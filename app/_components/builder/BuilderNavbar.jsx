@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { ArrowLeft, Download, Eye, EyeOff, Laptop, PanelLeft, Save, Loader2, Coins, Sparkles, Smartphone, Tablet } from 'lucide-react'
 import { toast } from '@/lib/alert'
 import Image from 'next/image'
@@ -10,6 +11,7 @@ import { formatCredits, getCreditStatus, getStatusColor } from '@/lib/creditUtil
 import CreditPurchaseModal from './CreditPurchaseModal'
 
 export default function BuilderNavbar({ project, projectId, device, onDeviceChange, onBack, previewRef, hasUnsavedChanges, onUnsavedChangesReset, onProjectUpdate, credits, onRefreshCredits, userEmail, isMobile, onToggleSidebar }) {
+    const router = useRouter()
     const [isSaving, setIsSaving] = useState(false)
     const [isPublishing, setIsPublishing] = useState(false)
     const [showPurchaseModal, setShowPurchaseModal] = useState(false)
@@ -101,8 +103,10 @@ export default function BuilderNavbar({ project, projectId, device, onDeviceChan
             }
 
             toast.success(data.message)
-            // Reload to update publish status
-            setTimeout(() => window.location.reload(), 1000)
+            if (onProjectUpdate) {
+                await onProjectUpdate({ suppressErrors: true })
+            }
+            router.refresh()
         } catch (error) {
             console.error('Error publishing:', error)
             toast.error(`Failed to publish: ${error.message}`)
@@ -182,7 +186,7 @@ export default function BuilderNavbar({ project, projectId, device, onDeviceChan
                             onBack()
                             return
                         }
-                        window.location.href = '/app'
+                        router.push('/app')
                     }}
                     className="inline-flex items-center cursor-pointer gap-1.5 px-3 py-1.5 rounded-lg border border-gray-700 text-gray-200 hover:bg-gray-800 hover:text-white transition-colors"
                     title="Back to Home"

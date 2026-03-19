@@ -1,10 +1,12 @@
 'use client'
 
 import React, { useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Bot, ChevronDown, Eye, Loader2, Send, User } from 'lucide-react'
 import { toast } from '@/lib/alert'
 
-export default function BuilderSidebar({ project, isGenerating, onRevision, userEmail }) {
+export default function BuilderSidebar({ project, isGenerating, onRevision, userEmail, onProjectUpdate }) {
+    const router = useRouter()
     const messageRef = useRef(null)
     const [input, setInput] = useState('')
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -80,8 +82,11 @@ export default function BuilderSidebar({ project, isGenerating, onRevision, user
                 throw new Error(data.error || 'Failed to rollback')
             }
 
-            toast.success('Rolled back successfully! Refresh the page to see changes.')
-            setTimeout(() => window.location.reload(), 1000)
+            toast.success('Rolled back successfully!')
+            if (onProjectUpdate) {
+                await onProjectUpdate({ suppressErrors: true })
+            }
+            router.refresh()
         } catch (error) {
             console.error('Error rolling back:', error)
             toast.error(`Failed to rollback: ${error.message}`)

@@ -185,6 +185,7 @@ function DisplayResult({ searchInputRecord }) {
     const [submittedQuery, setSubmittedQuery] = useState(''); // Only updates when user submits
     
     const [loadingSearch, setLoadingSearch] = useState(false);
+    const [researchProgress, setResearchProgress] = useState(null);
     const [searchType, setSearchType] = useState(searchInputRecord?.type === 'research' ? 'research' : 'search');
     const [isListening, setIsListening] = useState(false);
     const [recognition, setRecognition] = useState(null);
@@ -849,6 +850,7 @@ function DisplayResult({ searchInputRecord }) {
                     const latestChat = updatedChats[updatedChats.length - 1];
                     if (latestChat?.aiResp || hasNewAiResponse || allChatsHaveAiResp) {
                         setLoadingSearch(false);
+                        setResearchProgress(null);
                     }
 
                     // Stop polling if all chats have AI responses
@@ -869,6 +871,7 @@ function DisplayResult({ searchInputRecord }) {
             clearInterval(interval);
             setPollingInterval(null);
             setLoadingSearch(false); // Also set to false on timeout
+            setResearchProgress(null);
         }, 5 * 60 * 1000);
     }, [fetchSearchHistory, searchResult, pollingInterval, normalizeChatDocument, toBooleanValue]);
 
@@ -934,6 +937,7 @@ function DisplayResult({ searchInputRecord }) {
                 if (statusCheckCount > maxStatusChecks) {
                     clearInterval(interval);
                     setLoadingSearch(false);
+                    setResearchProgress(null);
                     return;
                 }
 
@@ -948,6 +952,7 @@ function DisplayResult({ searchInputRecord }) {
                     if (chat?.aiResp) {
                         clearInterval(interval);
                         setLoadingSearch(false);
+                        setResearchProgress(null);
 
                         // Update UI immediately with the retrieved response
                         setSearchResult(prevResult => {
@@ -972,6 +977,7 @@ function DisplayResult({ searchInputRecord }) {
                     if (consecutiveErrors >= maxConsecutiveErrors) {
                         clearInterval(interval);
                         setLoadingSearch(false);
+                        setResearchProgress(null);
                     }
                 }
 
@@ -1002,6 +1008,7 @@ function DisplayResult({ searchInputRecord }) {
             
             toast.error(errorMessage);
             setLoadingSearch(false);
+            setResearchProgress(null);
             throw error;
         }
     }, [deferredUserInput, searchInputRecord, selectedModel, isPro, GetSearchRecords]);
@@ -1049,7 +1056,6 @@ function DisplayResult({ searchInputRecord }) {
                 await axios.patch('/api/search/chats', { chatId, updateData });
                 await persistFileContext(uploadedFilesForAnalysis);
                 await GetSearchRecords();
-                startPollingForUpdates();
                 setLoadingSearch(false);
                 return;
             }
@@ -1074,7 +1080,7 @@ function DisplayResult({ searchInputRecord }) {
                 }
 
                 if (!useDirectModel && researchResp?.searchResult) {
-                    formattedSearchResp = researchResp.searchResult.map((item) => ({
+                    formattedSearchResp = researchResp.searchResult.map((item, index) => ({
                         title: item?.title || '',
                         description: item?.description || '',
                         name: item?.displayLink || '',
@@ -1085,7 +1091,11 @@ function DisplayResult({ searchInputRecord }) {
                         summary: item?.summary || '',
                         keyPoints: item?.keyPoints || [],
                         contentExcerpt: item?.contentExcerpt || '',
-                        metadata: item?.metadata || {}
+                        metadata: item?.metadata || {},
+                        qualityScore: item?.qualityScore ?? item?.metadata?.qualityScore,
+                        qualityBand: item?.qualityBand ?? item?.metadata?.qualityBand,
+                        sourceHost: item?.sourceHost ?? item?.metadata?.sourceHost,
+                        researchInsights: index === 0 ? (researchResp?.metadata || null) : null
                     }));
                 } else {
                     useDirectModel = true;
@@ -1133,7 +1143,6 @@ function DisplayResult({ searchInputRecord }) {
                 : searchInput;
 
             await GenerateAIResp(formattedSearchResp, chatId, useDirectModel, refreshPrompt, mode === 'research' ? 'research' : 'search');
-            startPollingForUpdates();
         } catch (error) {
             console.error('Error refreshing cached response:', error);
             setLoadingSearch(false);
@@ -1151,6 +1160,7 @@ function DisplayResult({ searchInputRecord }) {
         
         // Start loading state
         setLoadingSearch(true);
+        setResearchProgress(null);
 
         try {
             // Get the search input - prioritize deferredUserInput for new searches, fallback to searchInputRecord
@@ -1311,7 +1321,16 @@ function DisplayResult({ searchInputRecord }) {
                     // console.log('🔬 Starting RESEARCH mode for:', searchInput);
 
                     let researchResp;
+                    setResearchProgress({
+                        phase: 'planning',
+                        message: 'Planning research strategy...'
+                    });
                     try {
+                        setResearchProgress({
+                            phase: 'searching',
+                            message: 'Collecting and ranking sources...'
+                        });
+
                         const result = await axios.post('/api/research', {
                             searchInput: searchInput,
                             selectedModel: selectedModel,
@@ -1349,15 +1368,18 @@ function DisplayResult({ searchInputRecord }) {
                         const insertedChat = await createChatRecord(chatData);
 
                         await GetSearchRecords();
+                        setResearchProgress({
+                            phase: 'writing',
+                            message: 'Generating final answer without web sources...'
+                        });
                         await GenerateAIResp(formattedSearchResp, insertedChat.$id, true, '', 'research');
-                        startPollingForUpdates();
                         await clearFileContextAfterSuccess();
                         setUserInput('');
                         setSubmittedQuery(searchInput);
                         return;
                     }
 
-                    const formattedSearchResp = researchResp.searchResult.map((item) => ({
+                    const formattedSearchResp = researchResp.searchResult.map((item, index) => ({
                         title: item?.title || '',
                         description: item?.description || '',
                         name: item?.displayLink || '',
@@ -1368,7 +1390,11 @@ function DisplayResult({ searchInputRecord }) {
                         summary: item?.summary || '',
                         keyPoints: item?.keyPoints || [],
                         contentExcerpt: item?.contentExcerpt || '',
-                        metadata: item?.metadata || {}
+                        metadata: item?.metadata || {},
+                        qualityScore: item?.qualityScore ?? item?.metadata?.qualityScore,
+                        qualityBand: item?.qualityBand ?? item?.metadata?.qualityBand,
+                        sourceHost: item?.sourceHost ?? item?.metadata?.sourceHost,
+                        researchInsights: index === 0 ? (researchResp?.metadata || null) : null
                     }));
 
                     // console.log('📋 Formatted research sources:', formattedSearchResp.length, 'items');
@@ -1390,15 +1416,16 @@ function DisplayResult({ searchInputRecord }) {
 
                     await GetSearchRecords();
 
-                    // If the research API could not start synthesis (runId missing), fallback to client-side synthesis
-                    if (!researchResp.runId) {
-                        // console.log('🧪 Fallback: starting client-side synthesis since runId is missing');
-                        await GenerateAIResp(formattedSearchResp, insertedChat.$id, false, '', 'research');
-                    }
+                    // Always start synthesis client-side with the real inserted chat id.
+                    // This guarantees Inngest writes aiResp to the correct chat row.
+                    setResearchProgress({
+                        phase: 'writing',
+                        message: 'Writing evidence-backed final response...'
+                    });
+                    await GenerateAIResp(formattedSearchResp, insertedChat.$id, false, '', 'research');
 
                     // Start polling for AI response updates (either server-started or client fallback)
                     // console.log('🔄 Starting polling for research results...');
-                    startPollingForUpdates();
 
                 } else {
                     // SEARCH MODE: Standard quick search
@@ -1442,7 +1469,6 @@ function DisplayResult({ searchInputRecord }) {
                         await GetSearchRecords();
                         // Pass flag to GenerateAIResp to use direct model call
                         await GenerateAIResp(formattedSearchResp, insertedChat.$id, true, '', 'search');
-                        startPollingForUpdates();
                     } else if (!searchResp || !searchResp.categorizedResults) {
                         throw new Error('Invalid search response from Google Search API');
                     } else {
@@ -1470,7 +1496,6 @@ function DisplayResult({ searchInputRecord }) {
 
                         await GetSearchRecords();
                         await GenerateAIResp(formattedSearchResp, insertedChat.$id, false, '', 'search');
-                        startPollingForUpdates();
                     }
                 }
             }
@@ -1487,7 +1512,7 @@ function DisplayResult({ searchInputRecord }) {
             let errorMessage = 'Search failed. Please try again.';
             // Research plan/limit handling
             if (error.response?.status === 403 && error.response?.data?.error === 'RESEARCH_LIMIT_REACHED') {
-                errorMessage = error.response?.data?.message || 'Monthly Research limit reached.';
+                errorMessage = error.response?.data?.message || 'Weekly Deep Research limit reached.';
             }
             
             if (error.response?.status === 400) {
@@ -1508,6 +1533,7 @@ function DisplayResult({ searchInputRecord }) {
             
             toast.error(errorMessage);
             setLoadingSearch(false);
+            setResearchProgress(null);
         }
     }, [deferredUserInput, searchInputRecord, resolveFileContext, libId, searchType, currentUser?.email, createChatRecord, persistFileContext, GetSearchRecords, GenerateAIResp, startPollingForUpdates, normalizePrompt, refreshCachedChatResult, clearFileContextAfterSuccess]);
 
@@ -2063,6 +2089,7 @@ function DisplayResult({ searchInputRecord }) {
                                 searchResult={chat}
                                 isLatestMessage={isLatestMessage}
                                 isLoadingAnswer={isLoadingAnswer}
+                                researchProgress={isLatestMessage ? researchProgress : null}
                             />
                         ) : activeTab === 'Sources' ? (
                             <MemoizedSourceList
@@ -2176,6 +2203,12 @@ function DisplayResult({ searchInputRecord }) {
                                     <X className="h-3 w-3" />
                                 </button>
                             </div>
+
+                            {loadingSearch && researchProgress?.message && (
+                                <div className="rounded-full px-3 py-1 text-xs font-medium bg-amber-500/15 text-amber-400">
+                                    {researchProgress.message}
+                                </div>
+                            )}
                         </div>
                     )}
 

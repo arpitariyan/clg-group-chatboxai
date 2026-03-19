@@ -5,7 +5,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { ExternalLink, Globe, Calendar, ChevronDown, ChevronUp, FolderClosed } from 'lucide-react'
 import DisplaySummery from './DisplaySummery';
 
-function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer = false }) {
+function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer = false, researchProgress = null }) {
     // Add state to force re-renders when searchResult changes
     const [currentSearchResult, setCurrentSearchResult] = useState(searchResult);
 
@@ -41,6 +41,24 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
         enrichedSources: webResults.filter(item => item.summary).length,
         totalSources: webResults.length
     };
+    const researchInsights = webResults.find(item => item?.researchInsights)?.researchInsights || null;
+    const phaseDurationsMs = researchInsights?.phaseDurationsMs || null;
+    const followUpSuggestions = Array.isArray(researchInsights?.followUpSuggestions)
+        ? researchInsights.followUpSuggestions.slice(0, 4)
+        : [];
+    const qualityStats = webResults.reduce((acc, item) => {
+        const score = Number(item?.qualityScore ?? item?.metadata?.qualityScore ?? 0);
+        if (score > 0) {
+            acc.totalScore += score;
+            acc.scored += 1;
+        }
+        const band = item?.qualityBand || item?.metadata?.qualityBand;
+        if (band === 'high') acc.high += 1;
+        return acc;
+    }, { totalScore: 0, scored: 0, high: 0 });
+    const averageSourceQuality = qualityStats.scored > 0
+        ? Math.round(qualityStats.totalScore / qualityStats.scored)
+        : 0;
 
     // State for showing all results
     const [showAll, setShowAll] = useState(false);
@@ -129,6 +147,18 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
                             })()}
                         </span>
                         <ExternalLink className="w-3 h-3 text-gray-400 dark:text-gray-300 shrink-0" />
+                        {(item?.qualityBand || item?.metadata?.qualityBand) && (
+                            <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full border ${
+                                (item?.qualityBand || item?.metadata?.qualityBand) === 'high'
+                                    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
+                                    : (item?.qualityBand || item?.metadata?.qualityBand) === 'low'
+                                        ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                        : 'bg-sky-500/10 text-sky-500 border-sky-500/20'
+                            }`}>
+                                {(item?.qualityBand || item?.metadata?.qualityBand) === 'high' ? 'High trust' :
+                                    (item?.qualityBand || item?.metadata?.qualityBand) === 'low' ? 'Needs caution' : 'Medium trust'}
+                            </span>
+                        )}
                     </div>
 
                     {/* Description or enriched research summary */}
@@ -201,8 +231,31 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
                                 <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
                                     Enriched {researchMetadata.enrichedSources} / {researchMetadata.totalSources} sources (summaries & key points)
                                 </p>
+                                {qualityStats.scored > 0 && (
+                                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
+                                        Avg source confidence {averageSourceQuality}% • High-confidence sources {qualityStats.high}
+                                    </p>
+                                )}
+                                {phaseDurationsMs && (
+                                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
+                                        Planned {researchInsights?.plannedAngles?.length || 0} angles • Retrieval {Math.round((phaseDurationsMs.retrieval || 0) / 1000)}s • Total {Math.round((phaseDurationsMs.total || 0) / 1000)}s
+                                    </p>
+                                )}
                             </div>
                         </div>
+
+                        {followUpSuggestions.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                                {followUpSuggestions.map((suggestion, idx) => (
+                                    <div
+                                        key={`follow-up-${idx}`}
+                                        className="px-3 py-1.5 text-xs rounded-full bg-blue-500/10 text-blue-500 dark:text-blue-300 border border-blue-400/20"
+                                    >
+                                        {suggestion}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -297,6 +350,11 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
                 {/* AI Response Section - Now properly contained and scrollable */}
                 {isLoadingAnswer ? (
                     <div className="w-full min-w-0 py-1 space-y-3">
+                        {researchProgress?.message && (
+                            <div className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-amber-500/15 text-amber-500 dark:text-amber-300">
+                                {researchProgress.message}
+                            </div>
+                        )}
                         {/* Blinking cursor line — exactly like ChatGPT/Claude */}
                         {/* <div className="flex items-center gap-1">
                             <span

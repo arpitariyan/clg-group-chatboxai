@@ -415,10 +415,10 @@ const AppSidebar = () => {
                                             tooltip={item.title}
                                             className="p-5 py-5 dark:text-white dark:hover:text-white"
                                         >
-                                            <a href={item.path}>
+                                            <Link href={item.path} prefetch>
                                                 <item.icon className="w-5 h-5" />
                                                 <span className="text-lg">{item.title}</span>
-                                            </a>
+                                            </Link>
                                         </SidebarMenuButton>
                                     </SidebarMenuItem>
                                 )
@@ -498,10 +498,10 @@ const AppSidebar = () => {
                                                         </Button>
                                                     </div>
                                                 ) : (
-                                                    <a href={meta.url} title={item.title}>
+                                                    <Link href={meta.url} prefetch title={item.title}>
                                                         <Icon className="w-4 h-4 shrink-0" />
                                                         <span className="truncate text-sm">{truncateTitle(item.title)}</span>
-                                                    </a>
+                                                    </Link>
                                                 )}
                                             </SidebarMenuButton>
 
@@ -691,9 +691,9 @@ const AppSidebar = () => {
                                     </div>
                                     <div className="hidden group-data-[collapsible=icon]:flex justify-center p-1">
                                         <SidebarMenuButton asChild tooltip="Sign In" className="w-8 h-8 justify-center">
-                                            <a href="/sign-in">
+                                            <Link href="/sign-in" prefetch>
                                                 <User className="w-5 h-5" />
-                                            </a>
+                                            </Link>
                                         </SidebarMenuButton>
                                     </div>
                                 </>

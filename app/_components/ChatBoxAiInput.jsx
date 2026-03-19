@@ -63,13 +63,13 @@ function ChatBoxAiInput() {
     const { selectedModel, updateSelectedModel } = useModel();
     const { userPlan, planLoading, canGenerateImage, refreshPlan, isPro, remainingImages } = useUserPlan();
 
-    // Research usage status (monthly)
+    // Research usage status (weekly)
     const [researchUsage, setResearchUsage] = useState({
         loading: false,
         canResearch: true,
         remaining: -1,
-        monthlyLimit: -1,
-        monthlyCount: 0,
+        weeklyLimit: -1,
+        weeklyCount: 0,
         plan: 'free'
     });
 
@@ -79,8 +79,8 @@ function ChatBoxAiInput() {
                 loading: false,
                 canResearch: false,
                 remaining: 0,
-                monthlyLimit: 5,
-                monthlyCount: 0,
+                weeklyLimit: 5,
+                weeklyCount: 0,
                 plan: 'free'
             });
             return;
@@ -94,8 +94,12 @@ function ChatBoxAiInput() {
                     loading: false,
                     canResearch: !!data.canResearch,
                     remaining: typeof data.remaining === 'number' ? data.remaining : -1,
-                    monthlyLimit: typeof data.monthlyLimit === 'number' ? data.monthlyLimit : -1,
-                    monthlyCount: data.monthlyCount ?? 0,
+                    weeklyLimit: typeof data.weeklyLimit === 'number'
+                        ? data.weeklyLimit
+                        : (typeof data.monthlyLimit === 'number' ? data.monthlyLimit : -1),
+                    weeklyCount: typeof data.weeklyCount === 'number'
+                        ? data.weeklyCount
+                        : (data.monthlyCount ?? 0),
                     plan: data.plan || (isPro ? 'pro' : 'free')
                 });
             } else {
@@ -104,8 +108,8 @@ function ChatBoxAiInput() {
                     loading: false,
                     canResearch: isPro,
                     remaining: isPro ? -1 : 0,
-                    monthlyLimit: isPro ? -1 : 5,
-                    monthlyCount: 0,
+                    weeklyLimit: isPro ? -1 : 5,
+                    weeklyCount: 0,
                     plan: isPro ? 'pro' : 'free'
                 });
             }
@@ -114,8 +118,8 @@ function ChatBoxAiInput() {
                 loading: false,
                 canResearch: isPro,
                 remaining: isPro ? -1 : 0,
-                monthlyLimit: isPro ? -1 : 5,
-                monthlyCount: 0,
+                weeklyLimit: isPro ? -1 : 5,
+                weeklyCount: 0,
                 plan: isPro ? 'pro' : 'free'
             });
         }
@@ -748,14 +752,14 @@ function ChatBoxAiInput() {
                     toast.error('Please sign in to use Research.');
                     return;
                 }
-                const isUnlimited = isPro || researchUsage.monthlyLimit === -1;
+                const isUnlimited = isPro || researchUsage.weeklyLimit === -1;
                 if (!isUnlimited) {
                     if (researchUsage.loading) {
                         toast.info('Checking Research availability...');
                         return;
                     }
                     if (researchUsage.remaining <= 0) {
-                        toast.error('Monthly Research limit reached. Upgrade to Pro for unlimited Research.');
+                        toast.error('Weekly Deep Research limit reached. Upgrade to Pro for unlimited Research.');
                         return;
                     }
                 }
@@ -1083,15 +1087,15 @@ function ChatBoxAiInput() {
                     rows={1}
                     style={{ overflow: 'hidden' }}
                     onInput={handleInput}
-                    disabled={!isImageGenMode && searchType === 'research' && !isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0}
+                    disabled={!isImageGenMode && searchType === 'research' && !isPro && researchUsage.weeklyLimit !== -1 && researchUsage.remaining === 0}
                 />
 
                 {/* Research limit hint */}
-                {!isImageGenMode && searchType === 'research' && !isPro && researchUsage.monthlyLimit !== -1 && (
+                {!isImageGenMode && searchType === 'research' && !isPro && researchUsage.weeklyLimit !== -1 && (
                     <div className="px-4 pb-1 text-xs text-muted-foreground dark:text-gray-300">
                         {researchUsage.remaining > 0
-                            ? `${researchUsage.remaining} Research uses remaining this month`
-                            : 'Monthly Research limit reached. Upgrade to Pro for unlimited Research.'}
+                            ? `${researchUsage.remaining} Deep Research uses remaining this week`
+                            : 'Weekly Deep Research limit reached. Upgrade to Pro for unlimited Research.'}
                     </div>
                 )}
 
@@ -1131,8 +1135,8 @@ function ChatBoxAiInput() {
                                     {!isImageGenMode && (
                                         <button
                                             onClick={() => {
-                                                if (!isPro && researchUsage.monthlyLimit !== -1 && researchUsage.remaining === 0) {
-                                                    toast.error('Monthly Research limit reached. Upgrade to Pro for unlimited Research.');
+                                                if (!isPro && researchUsage.weeklyLimit !== -1 && researchUsage.remaining === 0) {
+                                                    toast.error('Weekly Deep Research limit reached. Upgrade to Pro for unlimited Research.');
                                                     setShowPlusMenu(false);
                                                     return;
                                                 }
@@ -1148,9 +1152,9 @@ function ChatBoxAiInput() {
                                         >
                                             <Atom className="h-4 w-4" />
                                             Deep Research
-                                            {!isPro && researchUsage.monthlyLimit !== -1 && (
+                                            {!isPro && researchUsage.weeklyLimit !== -1 && (
                                                 <span className="ml-auto inline-flex items-center justify-center px-1.5 py-0.5 text-[10px] rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                                                    {Math.max(0, researchUsage.remaining)}/{researchUsage.monthlyLimit}
+                                                    {Math.max(0, researchUsage.remaining)}/{researchUsage.weeklyLimit}
                                                 </span>
                                             )}
                                         </button>

@@ -422,6 +422,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                         isGenerating={isGenerating}
                         onRevision={handleRevision}
                         userEmail={currentUser?.email}
+                        onProjectUpdate={fetchProject}
                     />
                 </div>
 
@@ -440,6 +441,7 @@ export default function WebsiteBuilderPage({ params: paramsPromise }) {
                                 isGenerating={isGenerating}
                                 onRevision={handleRevision}
                                 userEmail={currentUser?.email}
+                                onProjectUpdate={fetchProject}
                             />
                         </div>
                     </>

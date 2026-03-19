@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -11,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { PLAN_FEATURES } from '@/lib/modelAccess';
 
 const PackagesModal = ({ isOpen, onClose }) => {
+  const router = useRouter();
   const { currentUser } = useAuth();
   const userContext = useUser();
   
@@ -20,8 +22,8 @@ const PackagesModal = ({ isOpen, onClose }) => {
     plan = 'free', 
     isSpecialAccount = false, 
     refreshUserData = async () => {
-      console.warn('refreshUserData not available, reloading page instead');
-      window.location.reload();
+      console.warn('refreshUserData not available, using router.refresh fallback');
+      router.refresh();
     }
   } = userContext || {};
   
@@ -161,10 +163,8 @@ const PackagesModal = ({ isOpen, onClose }) => {
                 // console.log('User data refreshed successfully');
               } catch (refreshError) {
                 console.error('Error refreshing user data:', refreshError);
-                // Fallback: reload the page to refresh user data
-                // console.log('Falling back to page reload');
-                window.location.reload();
-                return;
+                // Fallback: soft refresh route data without full page reload.
+                router.refresh();
               }
               
               // Give a moment for the state to update
