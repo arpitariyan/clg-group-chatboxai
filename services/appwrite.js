@@ -8,9 +8,9 @@ export const databases = new Databases(client);
 export const storage = new Storage(client);
 
 export const DB_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID || '';
-const configuredBucketId = process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_ID || process.env.APPWRITE_STORAGE_BUCKET_ID || 'mainStorage';
+const configuredBucketId = process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_ID || process.env.APPWRITE_STORAGE_BUCKET_ID || '';
 const STORAGE_BUCKET_ALIAS_MAP = {
-    mainStorage: process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_DOC_ID || process.env.APPWRITE_STORAGE_BUCKET_DOC_ID || '69a69b9c0009d1b683dd',
+    mainStorage: process.env.NEXT_PUBLIC_APPWRITE_STORAGE_BUCKET_DOC_ID || process.env.APPWRITE_STORAGE_BUCKET_DOC_ID || '',
 };
 
 export const BUCKET_ID = STORAGE_BUCKET_ALIAS_MAP[configuredBucketId] || configuredBucketId;

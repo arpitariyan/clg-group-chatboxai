@@ -21,7 +21,7 @@ const appwriteBucketId =
     'mainStorage';
 
 const STORAGE_BUCKET_ALIAS_MAP = {
-    mainStorage: process.env.APPWRITE_STORAGE_BUCKET_DOC_ID || '69a69b9c0009d1b683dd',
+    mainStorage: process.env.APPWRITE_STORAGE_BUCKET_DOC_ID || '',
 };
 
 const resolvedBucketId = STORAGE_BUCKET_ALIAS_MAP[appwriteBucketId] || appwriteBucketId;
