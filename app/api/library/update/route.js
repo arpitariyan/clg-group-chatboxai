@@ -5,6 +5,7 @@ import {
   IMAGE_GENERATION_COLLECTION_ID,
   WEBSITE_PROJECTS_COLLECTION_ID,
 } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
 
 const MAX_TITLE_LENGTH = 140;
 
@@ -104,10 +105,11 @@ async function renameWebsiteBuilder(libId, userEmail, title) {
   return updated;
 }
 
-export async function PATCH(request) {
+export const PATCH = withUser(async function PATCH(request, ctx) {
   try {
-    const body = await request.json();
-    const { libId, dataType, userEmail, title } = body || {};
+    const body = await request.json().catch(() => ({}));
+    const { libId, dataType, title } = body || {};
+    const userEmail = ctx.assertEmail(body.userEmail);
 
     if (!libId || !dataType || !userEmail) {
       return NextResponse.json(
@@ -158,4 +160,4 @@ export async function PATCH(request) {
       { status: 500 }
     );
   }
-}
+});

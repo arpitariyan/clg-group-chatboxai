@@ -5,7 +5,11 @@ import {
     helloWorld, 
     llmModel, 
     checkExpiredSubscriptions, 
-    manualSubscriptionCheck 
+    manualSubscriptionCheck,
+    websiteGenerateFunction,
+    monthlyCreditsReset,
+    deleteExpiredIncognitoChats,
+    cleanupExpiredOTPs,
 } from "@/inngest/functions";
 
 const handler = serve({
@@ -14,7 +18,11 @@ const handler = serve({
         helloWorld,
         llmModel,
         checkExpiredSubscriptions,
-        manualSubscriptionCheck
+        manualSubscriptionCheck,
+        websiteGenerateFunction,
+        monthlyCreditsReset,
+        deleteExpiredIncognitoChats,
+        cleanupExpiredOTPs,
     ],
 });
 
@@ -22,10 +30,12 @@ export const GET = handler.GET;
 export const POST = handler.POST;
 
 export async function PUT(request, context) {
+    // In both development and production, properly process webhooks
+    // The Inngest dev server needs to sync functions via webhooks
     const rawBody = await request.text();
 
     if (!rawBody || !rawBody.trim()) {
-        return NextResponse.json({ success: true, ignored: true });
+        return NextResponse.json({ success: true });
     }
 
     const forwardedRequest = new Request(request.url, {
@@ -43,19 +53,15 @@ export async function PUT(request, context) {
             message.includes('Failed calling `body` from serve handler');
 
         const isTransientWebhookError =
-            message.includes('context deadline exceeded') ||
-            message.includes('deadline exceeded') ||
-            message.includes('ECONNRESET') ||
-            message.includes('ETIMEDOUT') ||
-            message.includes('fetch failed');
+            message.toLowerCase().includes('context deadline exceeded') ||
+            message.toLowerCase().includes('deadline exceeded') ||
+            message.toLowerCase().includes('econnreset') ||
+            message.toLowerCase().includes('etimedout') ||
+            message.toLowerCase().includes('enotfound') ||
+            message.toLowerCase().includes('fetch failed');
 
-        if (isEmptyBodyParseError || (process.env.NODE_ENV === 'development' && isTransientWebhookError)) {
+        if (isEmptyBodyParseError || isTransientWebhookError) {
             return NextResponse.json({ success: true, ignored: true });
-        }
-
-        if (process.env.NODE_ENV === 'development') {
-            console.warn('[inngest/PUT] Non-fatal dev webhook error suppressed:', message);
-            return NextResponse.json({ success: true, ignored: true, warning: message.slice(0, 180) });
         }
 
         throw error;

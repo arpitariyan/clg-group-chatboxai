@@ -1,13 +1,16 @@
 import { NextResponse } from 'next/server';
 import { deductWebsiteCreditsWithLock } from '@/lib/website-builder-server-utils';
+import { withUser } from '@/lib/request-context';
 
 /**
  * POST /api/website-builder/credits/deduct
  * Deducts credits from user's account
  */
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
-        const { email, amount } = await request.json();
+        const body = await request.json();
+        const { amount } = body;
+        const email = ctx.assertEmail(body.email);
 
         if (!email || !amount) {
             return NextResponse.json(
@@ -56,4 +59,4 @@ export async function POST(request) {
             { status: 500 }
         );
     }
-}
+});

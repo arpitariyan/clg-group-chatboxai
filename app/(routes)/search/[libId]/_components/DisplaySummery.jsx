@@ -6,7 +6,24 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import { Copy, Check, ExternalLink, Globe } from 'lucide-react'
+import { Copy, Check, ExternalLink, Globe, ChevronDown, Brain } from '@/components/ui/animated-icon'
+import { motion } from 'motion/react'
+import { MEASURE, LABEL, FOCUS_RING, QUIET_BUTTON } from './answerSurface'
+
+/* Typography and colour here come from the shared answer-surface vocabulary in
+   ./answerSurface.js — read the docblock there before changing anything visual,
+   and do NOT reintroduce raw `gray-` / `zinc-` shades into this file. That split
+   palette is exactly what made the answer look unrelated to the rest of the
+   message. */
+
+/* Code stays on an inverted panel in both themes — the same call Claude and
+   ChatGPT make, because Prism's `oneDark` is a dark theme and swapping palettes
+   mid-answer is more jarring than a consistent dark block. These literals are
+   the *dark* ramp from globals.css, so in dark mode the block is continuous with
+   the surrounding surface instead of being a foreign object. */
+const CODE_SURFACE = '#17171a' // = .dark --canvas
+const CODE_HEADER = '#0f0f11'  // = .dark --page
+const CODE_EDGE = '#2a2a30'    // = .dark --line
 
 /* ─────────────────────────────────────────────────────────────────────────────
    localStorage-backed animation tracker.
@@ -47,6 +64,21 @@ function markAsAnimated(id) {
     }
 }
 
+/* Typing out an answer character-by-character is decorative motion, so it has to
+   yield to a reduced-motion preference. Both signals are honoured: the OS media
+   query, and `html.reduced-motion` which the app's own appearance setting sets. */
+function prefersReducedMotion() {
+    if (typeof window === 'undefined') return false
+    try {
+        return (
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches ||
+            document.documentElement.classList.contains('reduced-motion')
+        )
+    } catch {
+        return false
+    }
+}
+
 /* ─── Language display-name map ─── */
 const LANG_NAMES = {
     js: 'JavaScript', jsx: 'JSX',
@@ -69,7 +101,7 @@ const LANG_NAMES = {
 const getLangLabel = (lang) =>
     LANG_NAMES[lang?.toLowerCase()] ?? lang?.toUpperCase() ?? 'CODE'
 
-/* ─── Copy button ─── */
+/* ─── Copy button (lives on the inverted code panel, so it is dark-only) ─── */
 function CopyButton({ text }) {
     const [copied, setCopied] = useState(false)
 
@@ -97,27 +129,33 @@ function CopyButton({ text }) {
         <button
             type="button"
             onClick={handleCopy}
-            title={copied ? 'Copied!' : 'Copy code'}
-            aria-label={copied ? 'Copied!' : 'Copy code'}
+            aria-label={copied ? 'Code copied to clipboard' : 'Copy code'}
             className={`
-                flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md font-medium
-                transition-all duration-150 cursor-pointer select-none active:scale-95
+                flex items-center gap-1.5 rounded-control px-2 py-1
+                text-[0.6875rem] font-medium tracking-wide
+                transition-colors duration-150 cursor-pointer select-none
+                ${FOCUS_RING}
                 ${copied
-                    ? 'text-emerald-400 bg-emerald-400/10'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/10'
+                    ? 'text-emerald-400'
+                    : 'text-white/45 hover:text-white/90 hover:bg-white/8'
                 }
             `}
         >
             {copied ? (
-                <><Check className="w-3.5 h-3.5 shrink-0" /><span>Copied!</span></>
+                <><Check className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /><span>Copied</span></>
             ) : (
-                <><Copy className="w-3.5 h-3.5 shrink-0" /><span>Copy</span></>
+                <><Copy className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /><span>Copy</span></>
             )}
         </button>
     )
 }
 
-/* ─── Smart link ─── */
+/* ─── Smart link ───
+   A bare URL pasted into an answer becomes a compact source chip; anything with
+   real link text stays inline prose. The inline case is deliberately `inline`
+   (not inline-flex, and with no trailing icon): inline-flex stops a multi-word
+   link from wrapping across lines, and an icon after every link breaks the
+   reading rhythm — neither Claude nor ChatGPT stamps one. */
 function SmartLink({ href, children }) {
     const childText = typeof children === 'string' ? children : ''
     const isRawUrl = childText.startsWith('http://') || childText.startsWith('https://')
@@ -144,25 +182,20 @@ function SmartLink({ href, children }) {
         return (
             <a
                 {...commonProps}
-                className="inline-flex items-center gap-2 my-0.5 px-3 py-1.5
-                           rounded-lg border border-gray-200 dark:border-zinc-700
-                           bg-gray-50 dark:bg-zinc-800/60
-                           text-gray-700 dark:text-zinc-300
-                           hover:border-gray-400 dark:hover:border-zinc-500
-                           hover:bg-gray-100 dark:hover:bg-zinc-800
-                           transition-all duration-150 no-underline group max-w-full
-                           text-sm font-medium leading-tight"
+                className={`group my-0.5 inline-flex max-w-full items-center gap-2
+                            rounded-control px-2.5 py-1.5 align-middle
+                            text-[0.8125rem] leading-tight font-medium
+                            no-underline ${QUIET_BUTTON}`}
             >
-                <Globe className="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-zinc-500" />
-                <span className="truncate">
-                    <span className="font-semibold text-gray-900 dark:text-zinc-100">{domain}</span>
-                    {shortPath && (
-                        <span className="text-gray-400 dark:text-zinc-500 font-normal">{shortPath}</span>
-                    )}
+                <Globe className="w-3.5 h-3.5 shrink-0 text-ink-3" aria-hidden="true" />
+                <span className="min-w-0 truncate">
+                    <span className="font-semibold text-ink">{domain}</span>
+                    {shortPath && <span className="font-normal text-ink-3">{shortPath}</span>}
                 </span>
-                <ExternalLink className="w-3 h-3 shrink-0 text-gray-400 dark:text-zinc-500
-                                        group-hover:text-gray-600 dark:group-hover:text-zinc-300
-                                        transition-colors ml-auto" />
+                <ExternalLink
+                    className="ml-auto w-3 h-3 shrink-0 text-ink-3 transition-colors group-hover:text-ink-2"
+                    aria-hidden="true"
+                />
             </a>
         )
     }
@@ -170,37 +203,35 @@ function SmartLink({ href, children }) {
     return (
         <a
             {...commonProps}
-            className="inline-flex items-center gap-0.5 font-medium
-                       text-gray-800 dark:text-zinc-200
-                       underline underline-offset-2 decoration-gray-400 dark:decoration-zinc-500
-                       hover:text-gray-900 dark:hover:text-zinc-100
-                       hover:decoration-gray-600 dark:hover:decoration-zinc-300
-                       transition-colors duration-150"
+            className={`inline font-medium text-ink underline decoration-line-strong
+                        decoration-1 underline-offset-[3px] transition-colors duration-150
+                        hover:decoration-ink-3 [overflow-wrap:anywhere] ${FOCUS_RING}`}
         >
             {children}
-            <ExternalLink className="w-3 h-3 shrink-0 opacity-60 ml-0.5 mt-0.5" />
         </a>
     )
 }
 
-/* ─── Fenced code block ─── */
+/* ─── Fenced code block ───
+   The three fake macOS traffic-light dots that used to sit in the header were
+   pure decoration: they carry no state, aren't clickable, and pulled the eye to
+   the least important part of the block. Header is now just language + copy. */
 function CodeBlock({ language, code }) {
     const lang = language || 'text'
     const label = getLangLabel(lang)
 
     return (
-        <div className="my-5 rounded-xl overflow-hidden border border-zinc-700/40 bg-[#1a1a1a] shadow-lg not-prose">
-            <div className="flex items-center justify-between px-4 py-2.5 bg-[#111111] border-b border-zinc-700/40">
-                <div className="flex items-center gap-2">
-                    <span className="flex gap-1.5">
-                        <span className="w-3 h-3 rounded-full bg-zinc-700" />
-                        <span className="w-3 h-3 rounded-full bg-zinc-700" />
-                        <span className="w-3 h-3 rounded-full bg-zinc-700" />
-                    </span>
-                    <span className="text-xs font-mono font-medium text-zinc-400 select-none ml-1">
-                        {label}
-                    </span>
-                </div>
+        <div
+            className="not-prose my-5 overflow-hidden rounded-xl border"
+            style={{ background: CODE_SURFACE, borderColor: CODE_EDGE }}
+        >
+            <div
+                className="flex items-center justify-between border-b px-3 py-1.5"
+                style={{ background: CODE_HEADER, borderColor: CODE_EDGE }}
+            >
+                <span className={`${LABEL} select-none font-mono text-white/40`}>
+                    {label}
+                </span>
                 <CopyButton text={code} />
             </div>
             <div className="overflow-x-auto">
@@ -210,17 +241,15 @@ function CodeBlock({ language, code }) {
                     PreTag="div"
                     showLineNumbers
                     lineNumberStyle={{
-                        minWidth: '2.5em',
+                        minWidth: '2.25em',
                         paddingRight: '1em',
-                        color: '#4b5563',
-                        borderRight: '1px solid #27272a',
-                        marginRight: '1em',
+                        color: 'rgba(255,255,255,0.22)',
                         userSelect: 'none',
                         fontSize: '0.75rem',
                     }}
                     customStyle={{
                         margin: 0,
-                        padding: '1rem 1.25rem',
+                        padding: '0.875rem 1rem',
                         background: 'transparent',
                         fontSize: '0.8125rem',
                         lineHeight: '1.7',
@@ -239,6 +268,88 @@ function CodeBlock({ language, code }) {
     )
 }
 
+const THINKING_PHRASES = [
+    "Analyzing request...",
+    "Searching knowledge base...",
+    "Evaluating search results...",
+    "Formulating reasoning...",
+    "Drafting response...",
+    "Synthesizing information..."
+];
+
+/* ─── Thinking Block ───
+   Intentionally chrome-free: no background, no border, no circle behind the
+   icon — just a label and a hairline rail. See
+   memory_project/thinking_ui_redesign.md; that shape is a standing decision, so
+   only the colour tokens changed here. */
+function ThinkingBlock({ content, isFinished }) {
+    const [isOpen, setIsOpen] = useState(!isFinished);
+    const [phraseIndex, setPhraseIndex] = useState(0);
+
+    // Auto-close when finished
+    useEffect(() => {
+        if (isFinished) {
+            setIsOpen(false);
+        }
+    }, [isFinished]);
+
+    useEffect(() => {
+        if (isFinished || content) return;
+        const interval = setInterval(() => {
+            setPhraseIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [isFinished, content]);
+
+    return (
+        <div className="not-prose mb-5 flex w-full flex-col group/thinking">
+            <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setIsOpen(!isOpen)}
+                className={`-mx-1 flex w-fit cursor-pointer select-none items-center gap-2
+                            rounded-control px-1 py-0.5 text-ink-3 transition-colors
+                            hover:text-ink-2 ${FOCUS_RING}`}
+            >
+                <Brain className="w-4 h-4" aria-hidden="true" />
+                <span className="text-[0.9375rem] font-medium">
+                    {isFinished ? 'Reasoning' : 'Thinking…'}
+                </span>
+                <motion.div
+                    animate={{ rotate: isOpen ? 0 : -90 }}
+                    transition={{ duration: 0.2 }}
+                >
+                    <ChevronDown className="w-4 h-4" aria-hidden="true" />
+                </motion.div>
+            </button>
+
+            {isOpen && (
+                <div className="relative ml-[7px] mt-2 pl-5">
+                    <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-line-strong" />
+
+                    <div className={`${MEASURE} w-full whitespace-pre-wrap font-sans text-[0.9375rem] leading-[1.7] text-ink-2`}>
+                        {content ? (
+                            content
+                        ) : (
+                            <motion.div
+                                key={phraseIndex}
+                                initial={{ opacity: 0, filter: "blur(4px)" }}
+                                animate={{ opacity: 1, filter: "blur(0px)" }}
+                                exit={{ opacity: 0, filter: "blur(4px)" }}
+                                transition={{ duration: 0.4 }}
+                                className="flex items-center gap-2"
+                            >
+                                <div className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ink-3" />
+                                {THINKING_PHRASES[phraseIndex]}
+                            </motion.div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Main component
 ───────────────────────────────────────────────────────────────────────────── */
@@ -250,26 +361,54 @@ function DisplaySummery({
     analyzedFilesCount,
     isLatestMessage,
     resultId,
+    isThinkingMode,
 }) {
     /*
      * shouldAnimate — decided at component mount using localStorage.
-     *
-     * true  → first time this resultId is shown → play typing animation
-     * false → already animated before (back-navigation, re-render, etc.) → instant show
-     *
-     * We use useState initializer (runs only once at mount) so the decision
-     * never flips during the component's lifetime.
-     *
-     * NOTE: isLatestMessage is intentionally NOT used here because the parent
-     * passes true even on back-navigation, which was causing re-animation.
+     * A reduced-motion preference opts out entirely: the answer renders complete.
      */
     const [shouldAnimate] = useState(() => {
         if (!resultId) return false
+        if (prefersReducedMotion()) return false
         return !hasBeenAnimated(resultId)
     })
 
-    const [displayedText, setDisplayedText] = useState(
-        shouldAnimate ? '' : (aiResp ?? '')
+    // Pre-parse the aiResp into thinking and final content ONCE
+    const { fullThinking, fullFinal } = useMemo(() => {
+        if (!aiResp) return { fullThinking: '', fullFinal: '' };
+
+        const closedMatch = aiResp.match(/<think>([\s\S]*?)<\/think>/i);
+        const openMatch = !closedMatch ? aiResp.match(/<think>([\s\S]*)$/i) : null;
+
+        let thinking = '';
+        let final = aiResp;
+
+        if (closedMatch) {
+            thinking = closedMatch[1].trim();
+            final = aiResp.replace(/<think>[\s\S]*?<\/think>/i, '').trim();
+        } else if (openMatch) {
+            const unclosed = openMatch[1];
+            const transitionMatch = unclosed.match(/\n\n(?:\*\*|#|\d+\.\s|Here is)/);
+            if (transitionMatch) {
+                thinking = unclosed.substring(0, transitionMatch.index).trim();
+                final = unclosed.substring(transitionMatch.index).trim();
+            } else {
+                thinking = unclosed.trim();
+                final = '';
+            }
+        }
+
+        // Remove trailing or leading tool_call tags from final
+        final = final.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+
+        return { fullThinking: thinking, fullFinal: final };
+    }, [aiResp]);
+
+    const [displayedThinking, setDisplayedThinking] = useState(
+        shouldAnimate ? '' : fullThinking
+    )
+    const [displayedFinal, setDisplayedFinal] = useState(
+        shouldAnimate ? '' : fullFinal
     )
 
     const rafRef = useRef(null)
@@ -277,31 +416,37 @@ function DisplaySummery({
     useEffect(() => {
         if (!aiResp) return
 
-        // History message or already animated → show instantly
         if (!shouldAnimate) {
-            setDisplayedText(aiResp)
+            setDisplayedThinking(fullThinking)
+            setDisplayedFinal(fullFinal)
             return
         }
 
-        // Cancel any stray animation frame
         if (rafRef.current) {
             cancelAnimationFrame(rafRef.current)
             rafRef.current = null
         }
 
-        // Stream text in at ~1500 chars/sec (ChatGPT / Claude pace)
-        const fullText = aiResp
-        let currentIndex = 0
-        const CHARS_PER_FRAME = 25
+        const totalLength = fullThinking.length + fullFinal.length;
+        let currentIndex = 0;
 
         const tick = () => {
-            currentIndex = Math.min(currentIndex + CHARS_PER_FRAME, fullText.length)
-            setDisplayedText(fullText.slice(0, currentIndex))
+            const isInsideThink = currentIndex < fullThinking.length;
+            const charsPerFrame = isInsideThink ? 3 : 15;
 
-            if (currentIndex < fullText.length) {
+            currentIndex = Math.min(currentIndex + charsPerFrame, totalLength)
+
+            if (currentIndex <= fullThinking.length) {
+                setDisplayedThinking(fullThinking.slice(0, currentIndex))
+            } else {
+                // Thinking block is done
+                setDisplayedThinking(fullThinking)
+                setDisplayedFinal(fullFinal.slice(0, currentIndex - fullThinking.length))
+            }
+
+            if (currentIndex < totalLength) {
                 rafRef.current = requestAnimationFrame(tick)
             } else {
-                // Animation done — persist to localStorage so back-navigation skips it
                 markAsAnimated(resultId)
                 rafRef.current = null
             }
@@ -315,76 +460,92 @@ function DisplaySummery({
                 rafRef.current = null
             }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [aiResp])
+    }, [aiResp, shouldAnimate, fullThinking, fullFinal, resultId])
 
+    /* Markdown renderers.
+
+       Type scale is deliberately compressed relative to a document: an in-answer
+       h1 is 20px, not 30px. A heading inside a chat reply is a section marker,
+       not a page title — at 30px it out-shouted the page's own chrome. Hierarchy
+       is carried by weight and by asymmetric margins (more space above a heading
+       than below it, so it binds to the text it introduces).
+
+       Headings and text blocks are capped at MEASURE; tables, code and rules run
+       the full column width. */
     const components = useMemo(() => ({
         pre: ({ children }) => <>{children}</>,
 
         h1: ({ node, ...props }) => (
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-zinc-50 mt-8 mb-4 leading-tight tracking-tight" {...props} />
+            <h1 className={`${MEASURE} mt-9 mb-3.5 text-xl font-semibold leading-snug tracking-[-0.011em] text-balance text-ink first:mt-0`} {...props} />
         ),
         h2: ({ node, ...props }) => (
-            <h2 className="text-xl sm:text-2xl font-semibold text-gray-900 dark:text-zinc-50 mt-7 mb-3 leading-snug" {...props} />
+            <h2 className={`${MEASURE} mt-8 mb-3 text-[1.0625rem] font-semibold leading-snug tracking-[-0.006em] text-balance text-ink first:mt-0`} {...props} />
         ),
         h3: ({ node, ...props }) => (
-            <h3 className="text-lg sm:text-xl font-semibold text-gray-800 dark:text-zinc-100 mt-6 mb-2 leading-snug" {...props} />
+            <h3 className={`${MEASURE} mt-6 mb-2 text-base font-semibold leading-snug text-balance text-ink first:mt-0`} {...props} />
         ),
         h4: ({ node, ...props }) => (
-            <h4 className="text-base sm:text-lg font-semibold text-gray-800 dark:text-zinc-100 mt-5 mb-2 leading-snug" {...props} />
+            <h4 className={`${MEASURE} mt-5 mb-1.5 text-[0.9375rem] font-semibold leading-snug text-ink first:mt-0`} {...props} />
         ),
         h5: ({ node, ...props }) => (
-            <h5 className="text-sm sm:text-base font-semibold text-gray-800 dark:text-zinc-100 mt-4 mb-1.5 leading-snug" {...props} />
+            <h5 className={`${MEASURE} mt-5 mb-1.5 text-[0.9375rem] font-semibold leading-snug text-ink-2 first:mt-0`} {...props} />
         ),
         h6: ({ node, ...props }) => (
-            <h6 className="text-sm font-semibold text-gray-600 dark:text-zinc-400 mt-3 mb-1 leading-snug uppercase tracking-wider" {...props} />
+            <h6 className={`${MEASURE} ${LABEL} mt-5 mb-1.5 text-ink-3 first:mt-0`} {...props} />
         ),
 
         p: ({ node, ...props }) => (
-            <p className="text-[0.9375rem] leading-[1.85] text-gray-700 dark:text-zinc-300 mb-4 last:mb-0 wrap-break-word" {...props} />
+            <p className={`${MEASURE} mb-4 text-base leading-[1.7] text-ink last:mb-0 wrap-break-word`} {...props} />
         ),
 
         a: ({ node, href, children, ...props }) => (
             <SmartLink href={href}>{children}</SmartLink>
         ),
 
+        /* `[&_ul]` / `[&_ol]` tighten nested lists — a sub-list inheriting the
+           top-level my-4 opened a gap that broke the parent item apart. */
         ul: ({ node, ...props }) => (
-            <ul className="my-3 ml-5 space-y-1.5 text-[0.9375rem] text-gray-700 dark:text-zinc-300 list-disc marker:text-gray-400 dark:marker:text-zinc-600" {...props} />
+            <ul className={`${MEASURE} my-4 ml-5 list-disc space-y-2 text-base text-ink marker:text-ink-3 first:mt-0 last:mb-0 [&_ol]:my-2 [&_ul]:my-2`} {...props} />
         ),
         ol: ({ node, ...props }) => (
-            <ol className="my-3 ml-5 space-y-1.5 text-[0.9375rem] text-gray-700 dark:text-zinc-300 list-decimal marker:font-medium marker:text-gray-500 dark:marker:text-zinc-500" {...props} />
+            <ol className={`${MEASURE} my-4 ml-5 list-decimal space-y-2 text-base text-ink marker:font-medium marker:text-ink-3 first:mt-0 last:mb-0 [&_ol]:my-2 [&_ul]:my-2`} {...props} />
         ),
         li: ({ node, ...props }) => (
-            <li className="leading-[1.75] pl-0.5 wrap-break-word" {...props} />
+            <li className="pl-0.5 leading-[1.7] wrap-break-word" {...props} />
         ),
 
+        /* `border-l-0.75` used to be here — Tailwind v4's border-width utility
+           rejects decimals outright, so it rendered no rail at all. Also dropped
+           the italic: a whole block of italic body copy reads slower, and the
+           rail already says "quoted". */
         blockquote: ({ node, ...props }) => (
-            <blockquote className="my-4 pl-4 pr-2 py-1 border-l-[3px] border-gray-300 dark:border-zinc-600 text-gray-600 dark:text-zinc-400 italic" {...props} />
+            <blockquote className={`${MEASURE} my-5 border-l-2 border-line-strong py-0.5 pl-4 text-base leading-[1.7] text-ink-2 [&>p]:mb-2 [&>p:last-child]:mb-0`} {...props} />
         ),
 
         hr: ({ node, ...props }) => (
-            <hr className="my-8 border-0 border-t border-gray-200 dark:border-zinc-800" {...props} />
+            <hr className="my-8 border-0 border-t border-line" {...props} />
         ),
 
         table: ({ node, ...props }) => (
-            <div className="my-5 overflow-x-auto rounded-xl border border-gray-200 dark:border-zinc-700/80 shadow-sm">
-                <table className="w-full text-sm text-gray-700 dark:text-zinc-300 border-collapse" {...props} />
+            <div className="not-prose my-5 overflow-x-auto rounded-xl border border-line">
+                <table className="w-full border-collapse text-[0.875rem] text-ink" {...props} />
             </div>
         ),
         thead: ({ node, ...props }) => (
-            <thead className="bg-gray-50 dark:bg-zinc-800 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-zinc-400" {...props} />
+            <thead className={`${LABEL} bg-inset text-ink-3`} {...props} />
         ),
         th: ({ node, ...props }) => (
-            <th className="px-4 py-3 text-left border-b border-gray-200 dark:border-zinc-700 whitespace-nowrap" {...props} />
+            <th className="whitespace-nowrap border-b border-line px-3.5 py-2.5 text-left" {...props} />
         ),
         tbody: ({ node, ...props }) => (
-            <tbody className="divide-y divide-gray-100 dark:divide-zinc-800" {...props} />
+            <tbody className="divide-y divide-line" {...props} />
         ),
         tr: ({ node, ...props }) => (
-            <tr className="hover:bg-gray-50/80 dark:hover:bg-zinc-800/50 transition-colors duration-100" {...props} />
+            <tr className="transition-colors duration-100 hover:bg-inset" {...props} />
         ),
+        /* tabular-nums keeps figure columns from jittering row to row. */
         td: ({ node, ...props }) => (
-            <td className="px-4 py-2.5 align-top wrap-break-word" {...props} />
+            <td className="px-3.5 py-2.5 align-top leading-[1.6] tabular-nums wrap-break-word" {...props} />
         ),
 
         code: ({ node, className, children, ...props }) => {
@@ -395,14 +556,17 @@ function DisplaySummery({
                 return <CodeBlock language={match[1]} code={codeString} />
             }
 
+            /* Inline code is neutral, not rose. It appears mid-sentence dozens of
+               times in a technical answer; a saturated colour at that frequency
+               turns body copy into confetti and competed with the real accents.
+               `rounded-1.25` was dead here (no such radius token) — now [5px], the
+               same value the citation chips use. `em` sizing so it tracks whatever
+               size its container sets. */
             return (
                 <code
-                    className="px-1.25 py-0.5 mx-0.5 rounded-[5px]
-                               text-[0.8125rem] font-mono leading-normal
-                               bg-gray-100 dark:bg-zinc-800
-                               text-rose-600 dark:text-rose-400
-                               border border-gray-200/80 dark:border-zinc-700
-                               break-all"
+                    className="mx-0.5 rounded-[5px] bg-inset px-1.5 py-0.5
+                               font-mono text-[0.85em] leading-normal text-ink
+                               shadow-hairline [overflow-wrap:anywhere]"
                     {...props}
                 >
                     {children}
@@ -411,14 +575,14 @@ function DisplaySummery({
         },
 
         del: ({ node, ...props }) => (
-            <del className="line-through text-gray-400 dark:text-zinc-500" {...props} />
+            <del className="text-ink-3 line-through" {...props} />
         ),
 
         input: ({ node, ...props }) => {
             if (props.type === 'checkbox') {
                 return (
                     <input
-                        className="mr-2 h-4 w-4 rounded border-gray-300 dark:border-zinc-600 accent-blue-600 cursor-default"
+                        className="mr-2 h-4 w-4 cursor-default rounded border-line-strong accent-primary"
                         readOnly
                         {...props}
                     />
@@ -427,21 +591,34 @@ function DisplaySummery({
             return <input {...props} />
         },
 
+        /* Body copy is already `text-ink`, so emphasis reads through weight
+           alone — no colour shift needed. `not-italic-code` used to hang off the
+           `em` here; it is not a Tailwind class and was defined nowhere. */
         strong: ({ node, ...props }) => (
-            <strong className="font-semibold text-gray-900 dark:text-zinc-100" {...props} />
+            <strong className="font-semibold text-ink" {...props} />
         ),
         em: ({ node, ...props }) => (
-            <em className="italic text-gray-700 dark:text-zinc-300 not-italic-code" {...props} />
+            <em className="italic" {...props} />
         ),
     }), [])
 
+    // If the model skipped reasoning entirely
+    const modelSkippedThinking = !fullThinking && fullFinal.length > 25;
+    const shouldShowThinkingBlock = fullThinking.length > 0 || (isThinkingMode && !modelSkippedThinking);
+
+    // Thinking is finished when we've typed it all out (or if we skipped animation)
+    const isThinkingFinished = !shouldAnimate || displayedThinking.length >= fullThinking.length;
+
     return (
         <div className="w-full min-w-0">
+            {shouldShowThinkingBlock && (
+                <ThinkingBlock content={displayedThinking} isFinished={isThinkingFinished} />
+            )}
             <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkBreaks]}
                 components={components}
             >
-                {displayedText}
+                {displayedFinal}
             </ReactMarkdown>
         </div>
     )

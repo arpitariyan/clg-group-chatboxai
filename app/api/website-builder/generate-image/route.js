@@ -1,9 +1,10 @@
-﻿import { NextResponse } from 'next/server'
-import { storage, databases, DB_ID, BUCKET_ID, getFileUrl, ID, createAppwriteFile } from '@/services/appwrite-admin'
-import { getAuth } from '@clerk/nextjs/server'
+import { NextResponse } from 'next/server'
+import { storage, databases, DB_ID, BUCKET_ID, getPublicFileUrl, ID, createAppwriteFile } from '@/services/appwrite-admin'
 import OpenAI from 'openai'
 import sharp from 'sharp'
-import { WEBSITE_IMAGES_COLLECTION_ID } from '@/services/appwrite-collections'
+import { WEBSITE_IMAGES_COLLECTION_ID, WEBSITE_PROJECTS_COLLECTION_ID } from '@/services/appwrite-collections'
+import { withUser } from '@/lib/request-context'
+import { ensureProjectOwnership } from '@/lib/website-builder-server-utils'
 
 // Get available A4F API keys with fallback
 const getA4FApiKeys = () => {
@@ -51,24 +52,51 @@ const tryImageGeneration = async (keys, requestData) => {
     }
 }
 
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
-        const { userId } = getAuth(request)
-        
-        if (!userId) {
+        const userEmail = ctx.assertEmail()
+        if (!userEmail) {
             return NextResponse.json(
-                { error: 'Unauthorized' },
+                { error: 'User email is required' },
                 { status: 401 }
             )
         }
 
         const { prompt, projectId } = await request.json()
+        const trimmedPrompt = (prompt || '').trim()
 
-        if (!prompt) {
+        if (!trimmedPrompt) {
             return NextResponse.json(
                 { error: 'Prompt is required' },
                 { status: 400 }
             )
+        }
+
+        if (trimmedPrompt.length > 1000) {
+            return NextResponse.json(
+                { error: 'Image prompt exceeds maximum allowed limit of 1000 characters' },
+                { status: 400 }
+            )
+        }
+
+        // Verify project ownership before spending image generation quota
+        if (projectId) {
+            let project
+            try {
+                project = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId)
+            } catch (projectError) {
+                return NextResponse.json(
+                    { error: 'Project not found', details: projectError?.message },
+                    { status: 404 }
+                )
+            }
+
+            if (!ensureProjectOwnership(project, userEmail)) {
+                return NextResponse.json(
+                    { error: 'Unauthorized: You do not own this project' },
+                    { status: 403 }
+                )
+            }
         }
 
         const apiKeys = getA4FApiKeys()
@@ -81,7 +109,7 @@ export async function POST(request) {
 
         const requestData = {
             model: 'provider-4/imagen-4',
-            prompt: prompt,
+            prompt: trimmedPrompt,
             n: 1,
             size: '1024x1024'
         }
@@ -95,11 +123,22 @@ export async function POST(request) {
             )
         }
 
-        const imageUrl = result.response.data[0].url
+        const imageUrl = result.response.data[0]?.url
+        if (!imageUrl || !imageUrl.startsWith('https://')) {
+            throw new Error('Invalid or unencrypted image URL returned by provider')
+        }
 
         const imageResponse = await fetch(imageUrl)
         if (!imageResponse.ok) {
-            throw new Error('Failed to download generated image')
+            throw new Error(`Failed to download generated image (${imageResponse.status})`)
+        }
+
+        const contentLength = imageResponse.headers.get('content-length')
+        if (contentLength && parseInt(contentLength, 10) > 15 * 1024 * 1024) {
+            return NextResponse.json(
+                { error: 'Generated image exceeds maximum permitted size of 15MB' },
+                { status: 502 }
+            )
         }
 
         const imageBuffer = Buffer.from(await imageResponse.arrayBuffer())
@@ -115,7 +154,7 @@ export async function POST(request) {
         // Upload to Appwrite Storage
         const inputFile = createAppwriteFile(processedImageBuffer, fileName, 'image/png')
         const uploaded = await storage.createFile(BUCKET_ID, ID.unique(), inputFile)
-        const publicUrl = getFileUrl(uploaded.$id)
+        const publicUrl = getPublicFileUrl(uploaded.$id)
 
         // Store image record in database if projectId provided
         if (projectId) {
@@ -150,4 +189,4 @@ export async function POST(request) {
             { status: 500 }
         )
     }
-}
+})

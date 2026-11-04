@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import { checkImageGenerationLimit, checkUserPlan } from '@/lib/planUtils-server';
+import { withUser } from '@/lib/request-context';
+import { normalizePlan } from '@/lib/subscriptionPlans';
 
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
     try {
         const { searchParams } = new URL(request.url);
-        const userEmail = searchParams.get('email');
+        const userEmail = ctx.assertEmail(searchParams.get('email'));
 
         if (!userEmail) {
-            return NextResponse.json({ 
-                error: 'User email is required' 
+            return NextResponse.json({
+                error: 'User email is required'
             }, { status: 400 });
         }
 
@@ -18,27 +20,43 @@ export async function GET(request) {
             checkImageGenerationLimit(userEmail)
         ]);
 
+        const planName = normalizePlan(planInfo.plan || limitInfo.plan || 'free');
+        const isPaid = (planInfo.isPro || planInfo.isMax || planName === 'pro' || planName === 'max') && !planInfo.isExpired;
+        const isMax = planInfo.isMax || planName === 'max';
+        const dailyLimit = isPaid ? -1 : 10;
+        const dailyCount = limitInfo.dailyCount ?? 0;
+        const remainingImages = isPaid ? -1 : Math.max(0, dailyLimit - dailyCount);
+        const canGenerate = isPaid ? true : remainingImages > 0;
+
         return NextResponse.json({
             success: true,
             user: {
                 email: userEmail,
-                plan: limitInfo.plan,
-                isPro: planInfo.isPro
+                plan: planName,
+                isPro: isPaid,
+                isMax: isMax,
+                credits: planInfo.credits ?? 0,
+                paid_credits: planInfo.paid_credits ?? 0
             },
             limits: {
-                canGenerate: limitInfo.canGenerate,
-                dailyCount: limitInfo.dailyCount,
-                dailyLimit: limitInfo.dailyLimit,
-                message: limitInfo.message
+                canGenerate,
+                dailyCount,
+                dailyLimit,
+                remainingImages,
+                message: isPaid
+                    ? `Unlimited image generation available with ${isMax ? 'Max' : 'Pro'} plan`
+                    : (canGenerate
+                        ? `${remainingImages} of ${dailyLimit} images remaining today`
+                        : `Daily limit of ${dailyLimit} images reached. Upgrade to Pro for unlimited generation.`)
             },
             subscription: planInfo.subscription
         });
 
     } catch (error) {
         console.error('Error checking user plan:', error);
-        return NextResponse.json({ 
+        return NextResponse.json({
             error: 'Failed to check user plan',
-            details: error.message 
+            details: error.message
         }, { status: 500 });
     }
-}
+});

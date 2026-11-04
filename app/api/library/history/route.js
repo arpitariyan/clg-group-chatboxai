@@ -6,6 +6,9 @@ import {
   IMAGE_GENERATION_COLLECTION_ID,
   WEBSITE_PROJECTS_COLLECTION_ID,
 } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
+
+const HAS_APPWRITE_CONFIG = Boolean(DB_ID && process.env.APPWRITE_API_KEY);
 
 function getProxyFileUrl(fileId, userEmail, libId) {
   const params = new URLSearchParams({ fileId });
@@ -29,35 +32,58 @@ function normalizeDisplayUrl(rawUrl) {
   }
 }
 
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
   try {
     const { searchParams } = new URL(request.url);
-    const userEmail = searchParams.get('email');
+    const userEmail = ctx.assertEmail(searchParams.get('email'));
 
     if (!userEmail) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });
+    }
+
+    if (!HAS_APPWRITE_CONFIG) {
+      return NextResponse.json({
+        success: true,
+        libraryDocs: [],
+        imageGenDocs: [],
+        websiteProjectsDocs: [],
+        chatsMap: {},
+        warnings: {
+          library: 'Appwrite is not configured',
+          imageGeneration: 'Appwrite is not configured',
+          websiteProjects: 'Appwrite is not configured',
+        },
+      });
     }
 
     let libraryDocs = [];
     let imageGenDocs = [];
     let websiteProjectsDocs = [];
 
+    // Timeout helper for Appwrite requests
+    const withTimeout = (promise, ms = 3000, label = 'Appwrite') => {
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(label + ' timeout after ' + ms + 'ms')), ms)
+      );
+      return Promise.race([promise, timeout]);
+    };
+
     const [libResult, imgResult, wpResult] = await Promise.allSettled([
-      databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
+      withTimeout(databases.listDocuments(DB_ID, LIBRARY_COLLECTION_ID, [
         Query.equal('userEmail', userEmail),
         Query.orderDesc('$createdAt'),
         Query.limit(100),
-      ]),
-      databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+      ]), 3000, 'Library Fetch'),
+      withTimeout(databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
         Query.equal('userEmail', userEmail),
         Query.orderDesc('$createdAt'),
         Query.limit(100),
-      ]),
-      databases.listDocuments(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, [
+      ]), 3000, 'ImageGen Fetch'),
+      withTimeout(databases.listDocuments(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, [
         Query.equal('user_email', userEmail),
         Query.orderDesc('$createdAt'),
         Query.limit(100),
-      ]),
+      ]), 3000, 'WP Fetch'),
     ]);
 
     if (libResult.status === 'fulfilled') libraryDocs = libResult.value.documents;
@@ -103,10 +129,10 @@ export async function GET(request) {
       const libIds = libraryDocs.map((item) => item.libId).filter(Boolean);
       if (libIds.length > 0) {
         try {
-          const chatsRes = await databases.listDocuments(DB_ID, CHATS_COLLECTION_ID, [
+          const chatsRes = await withTimeout(databases.listDocuments(DB_ID, CHATS_COLLECTION_ID, [
             Query.equal('libId', libIds),
             Query.limit(500),
-          ]);
+          ]), 3000, 'Chats Fetch');
 
           for (const chat of chatsRes.documents) {
             if (!chatsMap[chat.libId]) chatsMap[chat.libId] = [];
@@ -140,4 +166,4 @@ export async function GET(request) {
       { status: 500 }
     );
   }
-}
+});

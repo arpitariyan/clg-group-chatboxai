@@ -5,6 +5,11 @@ import { APPWRITE_COLLECTIONS, isPlaceholderCollectionId } from '@/services/appw
 const hasValue = (value) => Boolean(value && String(value).trim());
 
 export async function GET() {
+  // SECURITY: Block this diagnostic endpoint in production
+  if (process.env.NODE_ENV === 'production') {
+    return new NextResponse(null, { status: 404 });
+  }
+
   try {
     const baseChecks = {
       endpointConfigured: hasValue(process.env.APPWRITE_ENDPOINT),

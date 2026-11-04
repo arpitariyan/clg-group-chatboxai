@@ -3,6 +3,8 @@ import { databases, DB_ID } from '@/services/appwrite-admin';
 import { ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { MODEL_ACCESS, getOperationCost, canAccessModel } from '@/lib/modelAccess';
+import { getPlanMonthlyCredits, normalizePlan } from '@/lib/subscriptionPlans';
+import { withUser } from '@/lib/request-context';
 
 // Helper function to get user by email
 async function getUser(email) {
@@ -18,32 +20,45 @@ async function getUser(email) {
   return res.documents[0];
 }
 
-// Helper function to check and reset monthly credits if needed
-async function maybeResetMonthly(user) {
-  if (!user.last_monthly_reset) {
-    // First time, set reset date
-    const resetCredits = user.plan === 'pro' ? 25000 : 5000;
-    await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
-      credits: resetCredits,
-      last_monthly_reset: new Date().toISOString().split('T')[0]
-    });
-    return resetCredits;
-  }
-
-  const lastReset = new Date(user.last_monthly_reset);
+// Helper function to check and reset credits if needed
+async function maybeResetCredits(user) {
+  let needsUpdate = false;
+  const updates = {};
   const now = new Date();
-  const daysDiff = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
+  const todayStr = now.toISOString().split('T')[0];
+  const normalizedPlan = normalizePlan(user.plan);
 
-  if (daysDiff >= 30) {
-    const resetCredits = user.plan === 'pro' ? 25000 : 5000;
-    await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, {
-      credits: resetCredits,
-      last_monthly_reset: now.toISOString().split('T')[0]
-    });
-    return resetCredits;
+  // 1. Daily Free Credits Reset
+  if (!user.last_daily_reset || user.last_daily_reset !== todayStr) {
+    updates.credits = 5000;
+    updates.last_daily_reset = todayStr;
+    needsUpdate = true;
   }
 
-  return user.credits;
+  // 2. Monthly Paid Credits Reset
+  if (normalizedPlan !== 'free') {
+    let shouldResetMonthly = false;
+    if (!user.last_monthly_reset) {
+      shouldResetMonthly = true;
+    } else {
+      const lastReset = new Date(user.last_monthly_reset);
+      const daysDiff = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
+      if (daysDiff >= 30) shouldResetMonthly = true;
+    }
+    
+    if (shouldResetMonthly) {
+      const currentPaid = Math.max(0, Number(user.paid_credits ?? 0));
+      updates.paid_credits = currentPaid + getPlanMonthlyCredits(normalizedPlan);
+      updates.last_monthly_reset = todayStr;
+      needsUpdate = true;
+    }
+  }
+
+  if (needsUpdate) {
+    await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, user.$id, updates);
+    return { ...user, ...updates };
+  }
+  return user;
 }
 
 // Helper function to update user credits
@@ -52,10 +67,11 @@ async function updateUser(docId, updates) {
   return updatedDoc;
 }
 
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
   try {
-    const body = await request.json();
-    const { user_email, model, operation_type = 'generation', cost } = body;
+    const body = await request.json().catch(() => ({}));
+    const { model, operation_type = 'generation', cost } = body;
+    const user_email = ctx.assertEmail(body.user_email);
 
     // Validate request
     if (!user_email || !model) {
@@ -76,12 +92,12 @@ export async function POST(request) {
       );
     }
 
-    // Check if monthly reset is needed
-    const currentCredits = await maybeResetMonthly(user);
-    user.credits = currentCredits;
+    // Check if reset is needed
+    user = await maybeResetCredits(user);
 
-    // Check if user can access this model
-    if (!canAccessModel(user.plan, model)) {
+    // Check if user can access this model (allow paid models if user has paid_credits > 0)
+    const hasPaidCreditsAvailable = (user.paid_credits || 0) > 0;
+    if (!canAccessModel(model, user.plan, user.paid_credits) && !hasPaidCreditsAvailable) {
       return NextResponse.json(
         { 
           error: 'MODEL_FORBIDDEN',
@@ -95,32 +111,40 @@ export async function POST(request) {
     // Calculate operation cost
     let operationCost = cost || getOperationCost(user.plan, model);
 
-    // Ensure free users always pay 15 credits regardless of model
-    if (user.plan === 'free') {
+    // Ensure free users pay standard cost for models
+    if (user.plan === 'free' && !hasPaidCreditsAvailable) {
       operationCost = 15;
     }
 
+    // Determine which wallet to use
+    // If it's a paid model and user has paid_credits > 0 or a paid plan, use paid_credits. Else use daily credits.
+    const isFreeModel = (MODEL_ACCESS.free || []).includes(model);
+    const usePaidWallet = !isFreeModel && (hasPaidCreditsAvailable || user.plan !== 'free');
+    const activeWalletCredits = usePaidWallet ? (user.paid_credits || 0) : user.credits;
+
     // Check if user has sufficient credits
-    if (user.credits < operationCost) {
+    if (activeWalletCredits < operationCost) {
       return NextResponse.json(
         {
           error: 'INSUFFICIENT_CREDITS',
-          message: `Insufficient credits. Required: ${operationCost}, Available: ${user.credits}`,
+          message: `Insufficient ${usePaidWallet ? 'paid-model' : 'daily free'} credits. Required: ${operationCost}, Available: ${activeWalletCredits}`,
           required_credits: operationCost,
-          available_credits: user.credits
+          available_credits: activeWalletCredits
         },
         { status: 402 } // Payment Required
       );
     }
 
     // Deduct credits
-    const newCredits = Math.max(0, user.credits - operationCost);
-    const updatedUser = await updateUser(user.$id, { credits: newCredits });
+    const newCredits = Math.max(0, activeWalletCredits - operationCost);
+    const updateField = usePaidWallet ? 'paid_credits' : 'credits';
+    const updatedUser = await updateUser(user.$id, { [updateField]: newCredits });
 
-    // Log the operation (optional, for analytics)
+    // Log the operation
     try {
       await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
         user_id: user.$id,
+        user_email: user.email,
         model: model,
         operation_type: operation_type,
         credits_consumed: operationCost,
@@ -128,7 +152,6 @@ export async function POST(request) {
       });
     } catch (logError) {
       console.error('Failed to log usage:', logError);
-      // Don't fail the request for logging errors
     }
 
     return NextResponse.json({
@@ -152,13 +175,13 @@ export async function POST(request) {
       { status: 500 }
     );
   }
-}
+});
 
 // GET endpoint to check user's current credits and plan
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
   try {
     const { searchParams } = new URL(request.url);
-    const user_email = searchParams.get('user_email');
+    const user_email = ctx.assertEmail(searchParams.get('user_email'));
 
     if (!user_email) {
       return NextResponse.json(
@@ -178,14 +201,16 @@ export async function GET(request) {
       );
     }
 
-    // Check if monthly reset is needed
-    const currentCredits = await maybeResetMonthly(user);
+    // Check if reset is needed
+    user = await maybeResetCredits(user);
 
     return NextResponse.json({
       user_plan: user.plan,
-      credits_remaining: currentCredits,
-      monthly_limit: user.plan === 'pro' ? 25000 : 5000,
+      credits_remaining: user.credits,
+      paid_credits_remaining: user.paid_credits || 0,
+      monthly_limit: getPlanMonthlyCredits(normalizePlan(user.plan)),
       last_reset: user.last_monthly_reset,
+      last_daily_reset: user.last_daily_reset,
       available_models: MODEL_ACCESS[user.plan],
       is_special_account: user_email === 'arpitariyanm@gmail.com'
     });
@@ -202,4 +227,4 @@ export async function GET(request) {
       { status: 500 }
     );
   }
-}
+});

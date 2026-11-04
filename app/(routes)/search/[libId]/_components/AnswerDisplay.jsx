@@ -1,11 +1,93 @@
 'use client'
 
-import Image from 'next/image'
 import React, { useState, useEffect, useRef } from 'react'
-import { ExternalLink, Globe, Calendar, ChevronDown, ChevronUp, FolderClosed } from 'lucide-react'
+import { motion } from 'motion/react'
+import { ChevronDown, ImageIcon, Atom, Brain } from '@/components/ui/animated-icon'
 import DisplaySummery from './DisplaySummery';
+import { MEASURE, LABEL, FOCUS_RING, RESEARCH_BADGE, PROGRESS_BADGE } from './answerSurface'
 
-function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer = false, researchProgress = null }) {
+/* Visual vocabulary comes from ./answerSurface.js — the ink / line / inset ramp,
+   the single small-caps LABEL, the shared focus ring and the Deep Research badge.
+   This file used to carry its own gray/zinc palette plus a hand-rolled shield
+   icon for Deep Research, which made the same feature look different depending
+   on whether you were reading the composer or the answer. */
+
+const THINKING_PHRASES = [
+    "Analyzing request...",
+    "Searching knowledge base...",
+    "Evaluating search results...",
+    "Formulating reasoning...",
+    "Drafting response...",
+    "Synthesizing information..."
+];
+
+/* Deliberately chrome-free — no background, no border, no circle behind the
+   icon. See memory_project/thinking_ui_redesign.md; that shape is a standing
+   decision, so only the colour tokens changed here. Kept structurally identical
+   to ThinkingBlock in DisplaySummery so the reasoning trace does not visibly
+   change shape at the moment the stream starts arriving. */
+const ThinkingProcess = ({ isComplete = false }) => {
+    const [phraseIndex, setPhraseIndex] = useState(0);
+    const [isOpen, setIsOpen] = useState(!isComplete);
+
+    useEffect(() => {
+        if (isComplete) return;
+        const interval = setInterval(() => {
+            setPhraseIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
+        }, 2000);
+        return () => clearInterval(interval);
+    }, [isComplete]);
+
+    return (
+        <div className="not-prose mb-5 flex w-full flex-col group/thinking">
+            <button
+                type="button"
+                aria-expanded={isOpen}
+                onClick={() => setIsOpen(!isOpen)}
+                className={`-mx-1 flex w-fit cursor-pointer select-none items-center gap-2
+                            rounded-control px-1 py-0.5 text-ink-3 transition-colors
+                            hover:text-ink-2 ${FOCUS_RING}`}
+            >
+                <Brain className="h-4 w-4" aria-hidden="true" />
+                <span className="text-[0.9375rem] font-medium">
+                    {isComplete ? 'Reasoning' : 'Thinking…'}
+                </span>
+                <motion.div
+                    animate={{ rotate: isOpen ? 0 : -90 }}
+                    transition={{ duration: 0.2 }}
+                >
+                    <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                </motion.div>
+            </button>
+
+            {isOpen && (
+                <div className="relative ml-[7px] mt-2 pl-5">
+                    <div className="absolute bottom-1 left-0 top-1 w-[2px] rounded-full bg-line-strong" />
+
+                    <div className={`${MEASURE} w-full font-sans text-[0.9375rem] leading-[1.7] text-ink-2`}>
+                        {!isComplete ? (
+                            <motion.div
+                                key={phraseIndex}
+                                initial={{ opacity: 0, filter: "blur(4px)" }}
+                                animate={{ opacity: 1, filter: "blur(0px)" }}
+                                exit={{ opacity: 0, filter: "blur(4px)" }}
+                                transition={{ duration: 0.4 }}
+                                className="flex items-center gap-2"
+                            >
+                                <div className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-ink-3" />
+                                {THINKING_PHRASES[phraseIndex]}
+                            </motion.div>
+                        ) : (
+                            <span>Reasoning process complete.</span>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const AnswerDisplay = ({ searchResult, isLatestMessage = false, isLoadingAnswer = false, researchProgress = null, selectedAppId = null, isThinkingMode = false }) => {
     // Add state to force re-renders when searchResult changes
     const [currentSearchResult, setCurrentSearchResult] = useState(searchResult);
 
@@ -26,351 +108,147 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
     }, [searchResult, searchResult?.aiResp, searchResult?.id]) // Also depend on aiResp specifically
 
     // Get the mixed results or categorized web results
-    const webResults = currentSearchResult?.searchResult || currentSearchResult?.categorizedResults?.web || currentSearchResult?.mixedResults?.filter(item => item.resultType === 'web') || []
+    const rawResults = currentSearchResult?.searchResult;
+    let webResults = [];
+    if (Array.isArray(rawResults)) {
+        webResults = rawResults;
+    } else if (rawResults && typeof rawResults === 'object') {
+        if (Array.isArray(rawResults.results)) webResults = rawResults.results;
+        else if (Array.isArray(rawResults.items)) webResults = rawResults.items;
+        else if (Array.isArray(rawResults.web)) webResults = rawResults.web;
+    } else if (typeof rawResults === 'string') {
+        try {
+            const parsed = JSON.parse(rawResults);
+            if (Array.isArray(parsed)) webResults = parsed;
+            else if (parsed && typeof parsed === 'object') {
+                if (Array.isArray(parsed.results)) webResults = parsed.results;
+                else if (Array.isArray(parsed.web)) webResults = parsed.web;
+            }
+        } catch {
+            webResults = [];
+        }
+    }
+
+    if (webResults.length === 0) {
+        if (Array.isArray(currentSearchResult?.categorizedResults?.web)) {
+            webResults = currentSearchResult.categorizedResults.web;
+        } else if (Array.isArray(currentSearchResult?.mixedResults)) {
+            webResults = currentSearchResult.mixedResults.filter(item => item?.resultType === 'web');
+        }
+    }
 
     // Check if this is a file analysis result
+    const processedFiles = Array.isArray(currentSearchResult?.processedFiles) ? currentSearchResult.processedFiles : [];
     const isFileAnalysis = currentSearchResult?.analyzedFilesCount > 0 ||
-        (currentSearchResult?.processedFiles && currentSearchResult.processedFiles.length > 0) ||
+        (processedFiles.length > 0) ||
         (webResults?.length > 0 && webResults[0]?.type === 'file_analysis');
     const analyzedFilesCount = currentSearchResult?.analyzedFilesCount || 0;
-    const processedFiles = currentSearchResult?.processedFiles || [];
 
     // Detect research mode via enriched source fields (no longer relying on metadata column)
-    const isResearchResult = webResults?.some(item => item?.deepResearch || item?.summary || (item?.keyPoints && item.keyPoints.length > 0));
+    const isResearchResult = webResults.some(item => item?.deepResearch || item?.summary || (item?.keyPoints && item.keyPoints.length > 0));
     const researchMetadata = {
         enrichedSources: webResults.filter(item => item.summary).length,
         totalSources: webResults.length
     };
     const researchInsights = webResults.find(item => item?.researchInsights)?.researchInsights || null;
     const phaseDurationsMs = researchInsights?.phaseDurationsMs || null;
-    const followUpSuggestions = Array.isArray(researchInsights?.followUpSuggestions)
-        ? researchInsights.followUpSuggestions.slice(0, 4)
-        : [];
-    const qualityStats = webResults.reduce((acc, item) => {
-        const score = Number(item?.qualityScore ?? item?.metadata?.qualityScore ?? 0);
-        if (score > 0) {
-            acc.totalScore += score;
-            acc.scored += 1;
-        }
-        const band = item?.qualityBand || item?.metadata?.qualityBand;
-        if (band === 'high') acc.high += 1;
-        return acc;
-    }, { totalScore: 0, scored: 0, high: 0 });
-    const averageSourceQuality = qualityStats.scored > 0
-        ? Math.round(qualityStats.totalScore / qualityStats.scored)
-        : 0;
 
-    // State for showing all results
-    const [showAll, setShowAll] = useState(false);
+    const [canvaProgress, setCanvaProgress] = useState(0);
 
-    // Check if Google API was used for this search
-    // Determine this based on whether searchResult exists and has content
-    // If there are searchResults, Google API was used; otherwise it was a direct AI fallback
-    const googleApiUsed = webResults && webResults.length > 0;
-
-    // Determine how many cards to show in first row based on screen size
-    const getCardsPerRow = () => {
-        if (typeof window !== 'undefined') {
-            if (window.innerWidth >= 1024) return 4; // lg screens
-            if (window.innerWidth >= 768) return 3;  // md screens
-            if (window.innerWidth >= 640) return 2;  // sm screens
-            return 1; // mobile
-        }
-        return 4; // default for SSR
-    };
-
-    const cardsPerRow = getCardsPerRow();
-    const firstRowCards = webResults.slice(0, cardsPerRow);
-    const remainingCards = webResults.slice(cardsPerRow);
-
-    // Safe Image Component with error handling
-    const SafeImage = ({ src, alt, width, height, className, unoptimized = true }) => {
-        const [imageError, setImageError] = useState(false);
-        const [imageLoading, setImageLoading] = useState(true);
-
-        if (imageError || !src) {
-            return <Globe className={`text-gray-400 dark:text-gray-300 ${width <= 20 ? 'w-4 h-4' : 'w-8 h-8'}`} />;
+    useEffect(() => {
+        if (selectedAppId !== 'canva' || !isLoadingAnswer) {
+            setCanvaProgress(0);
+            return undefined;
         }
 
-        return (
-            <div className="relative">
-                {imageLoading && (
-                    <div className={`animate-pulse bg-gray-200 rounded ${className}`}
-                        style={{ width, height }}>
-                    </div>
-                )}
-                <Image
-                    src={src}
-                    alt={alt || "Image"}
-                    width={width}
-                    height={height}
-                    className={`${className} ${imageLoading ? 'opacity-0' : 'opacity-100'} transition-opacity`}
-                    onError={() => {
-                        setImageError(true);
-                        setImageLoading(false);
-                    }}
-                    onLoad={() => setImageLoading(false)}
-                    unoptimized={unoptimized}
-                />
-            </div>
-        );
-    };
+        const interval = setInterval(() => {
+            setCanvaProgress((prev) => {
+                if (prev >= 100) return 0;
+                const increment = prev < 80 ? Math.random() * 2 + 1 : Math.random() * 0.5 + 0.1;
+                return Math.min(prev + increment, 100);
+            });
+        }, 200);
 
-    const CardComponent = ({ item, index }) => (
-        <a
-            href={item.url || item.link}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="no-underline block"
+        return () => clearInterval(interval);
+    }, [selectedAppId, isLoadingAnswer]);
+
+    const CanvaLoadingCard = () => (
+        <div
+            className="relative flex aspect-21/9 w-full max-w-5xl overflow-hidden rounded-xl p-5 sm:aspect-[1.9/1] sm:p-6"
+            style={{
+                background: 'linear-gradient(145deg, #54575E 0%, #28292B 100%)',
+                boxShadow: '0 0 0 1px rgba(255,255,255,0.04) inset, 0 20px 40px -16px rgba(0,0,0,0.55)',
+            }}
+            role="status"
+            aria-live="polite"
+            aria-label={`Generating design, ${Math.round(canvaProgress)} percent complete`}
         >
-            <div className="bg-gray-200 dark:bg-[oklch(0.3092_0_0)] rounded-lg border border-gray-400 dark:border-gray-600 hover:bg-gray-300 dark:hover:bg-[oklch(0.3092_0_0)] p-3 cursor-pointer h-fit transition-colors">
-                <div className="flex flex-col gap-2.5">
-                    {/* Top - Platform Info */}
-                    <div className="flex items-center gap-2">
-                        <div className="w-5 h-5 flex items-center justify-center bg-gray-50 dark:bg-gray-700 rounded-full shrink-0">
-                            <SafeImage
-                                src={item.thumbnail || item.image || item.pagemap?.cse_thumbnail?.[0]?.src}
-                                alt="Site favicon"
-                                width={14}
-                                height={14}
-                                className="rounded"
-                            />
-                        </div>
-                        <span className="text-xs font-medium text-gray-600 dark:text-gray-300 uppercase tracking-wide truncate">
-                            {item.name || item.displayLink || (() => {
-                                try {
-                                    const url = item.url || item.link;
-                                    return url ? new URL(url).hostname.replace('www.', '') : 'Website';
-                                } catch {
-                                    return 'Website';
-                                }
-                            })()}
-                        </span>
-                        <ExternalLink className="w-3 h-3 text-gray-400 dark:text-gray-300 shrink-0" />
-                        {(item?.qualityBand || item?.metadata?.qualityBand) && (
-                            <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full border ${
-                                (item?.qualityBand || item?.metadata?.qualityBand) === 'high'
-                                    ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20'
-                                    : (item?.qualityBand || item?.metadata?.qualityBand) === 'low'
-                                        ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
-                                        : 'bg-sky-500/10 text-sky-500 border-sky-500/20'
-                            }`}>
-                                {(item?.qualityBand || item?.metadata?.qualityBand) === 'high' ? 'High trust' :
-                                    (item?.qualityBand || item?.metadata?.qualityBand) === 'low' ? 'Needs caution' : 'Medium trust'}
-                            </span>
-                        )}
-                    </div>
+            <motion.div
+                className="pointer-events-none absolute inset-0 bg-linear-to-r from-transparent via-white/4 to-transparent"
+                initial={{ x: '-100%' }}
+                animate={{ x: '100%' }}
+                transition={{ duration: 2.5, repeat: Infinity, ease: 'easeIn' }}
+            />
 
-                    {/* Description or enriched research summary */}
-                    {item.summary ? (
-                        <div className="space-y-1">
-                            <p className="text-xs font-medium text-gray-800 dark:text-gray-200 leading-relaxed line-clamp-3">
-                                {item.summary}
-                            </p>
-                            {item.keyPoints && item.keyPoints.length > 0 && (
-                                <ul className="text-[10px] text-gray-600 dark:text-gray-300 list-disc ml-4 space-y-0.5 max-h-16 overflow-y-auto">
-                                    {item.keyPoints.slice(0, 4).map((kp, i) => (
-                                        <li key={i}>{kp}</li>
-                                    ))}
-                                </ul>
-                            )}
-                        </div>
-                    ) : (
-                        <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed overflow-hidden line-clamp-2"
-                            style={{
-                                display: '-webkit-box',
-                                WebkitLineClamp: 2,
-                                WebkitBoxOrient: 'vertical',
-                                textOverflow: 'ellipsis'
-                            }}>
-                            {item.description || item.snippet || item.title || 'No description available'}
-                        </p>
-                    )}
-
-                    {/* Additional metadata */}
-                    <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400 mt-auto">
-                        {/* Channel/Author name */}
-                        {(item.name || item.displayLink) && (
-                            <div className="flex items-center gap-1 truncate">
-                                <span className="truncate">
-                                    {item.name || item.displayLink}
-                                </span>
-                            </div>
-                        )}
-
-                        {/* Publish date */}
-                        {item.pagemap?.metatags?.[0]?.['article:published_time'] && (
-                            <div className="flex items-center gap-1 ml-auto">
-                                <Calendar className="w-3 h-3 shrink-0 dark:text-gray-300" />
-                                <span className="truncate">
-                                    {new Date(item.pagemap.metatags[0]['article:published_time']).toLocaleDateString()}
-                                </span>
-                            </div>
-                        )}
-                    </div>
-                </div>
+            <div className="relative z-10 flex w-full items-start justify-between text-[#a0a3aa]">
+                <ImageIcon className="h-5 w-5 opacity-80 sm:h-6 sm:w-6" strokeWidth={1.5} aria-hidden="true" />
+                <span className="text-sm font-medium tabular-nums sm:text-base">{Math.round(canvaProgress)}%</span>
             </div>
-        </a>
+        </div>
     );
 
     return (
-        <div className="mt-5 min-w-0 w-full overflow-hidden">
+        <div className="min-w-0 w-full overflow-hidden">
             <div className="min-w-0">
 
-                {/* Research Mode Indicator */}
+                {/* Deep Research header — the same badge the composer uses, so the
+                    mode is recognisable from either end of the conversation. */}
                 {isResearchResult && (
-                    <div className="mb-4">
-                        <div className="flex items-center space-x-3 p-3 bg-linear-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-700 rounded-lg">
-                            <div className="w-8 h-8 rounded-full bg-blue-500 dark:bg-blue-600 flex items-center justify-center shrink-0">
-                                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                                </svg>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">Deep Research Mode</h3>
-                                <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
-                                    Enriched {researchMetadata.enrichedSources} / {researchMetadata.totalSources} sources (summaries & key points)
-                                </p>
-                                {qualityStats.scored > 0 && (
-                                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
-                                        Avg source confidence {averageSourceQuality}% • High-confidence sources {qualityStats.high}
-                                    </p>
-                                )}
-                                {phaseDurationsMs && (
-                                    <p className="text-xs text-blue-700 dark:text-blue-300 mt-0.5">
-                                        Planned {researchInsights?.plannedAngles?.length || 0} angles • Retrieval {Math.round((phaseDurationsMs.retrieval || 0) / 1000)}s • Total {Math.round((phaseDurationsMs.total || 0) / 1000)}s
-                                    </p>
-                                )}
-                            </div>
+                    <div className="mb-4 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                        <div className={RESEARCH_BADGE}>
+                            <Atom className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span className={LABEL}>Deep Research</span>
                         </div>
-
-                        {followUpSuggestions.length > 0 && (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                                {followUpSuggestions.map((suggestion, idx) => (
-                                    <div
-                                        key={`follow-up-${idx}`}
-                                        className="px-3 py-1.5 text-xs rounded-full bg-blue-500/10 text-blue-500 dark:text-blue-300 border border-blue-400/20"
-                                    >
-                                        {suggestion}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
+                        <span className="text-[0.75rem] text-ink-3 tabular-nums">
+                            {researchMetadata.enrichedSources}/{researchMetadata.totalSources} sources analyzed
+                            {phaseDurationsMs && ` · ${Math.round((phaseDurationsMs.total || 0) / 1000)}s`}
+                        </span>
                     </div>
                 )}
-
-                {/* File Analysis Indicator */}
-                {isFileAnalysis && (
-                    <div className="mb-6">
-                        <div className="flex items-center space-x-3 p-4 dark:bg-[oklch(0.209_0_0)] dark:border-gray-600 rounded-lg">
-                            <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0">
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                </svg>
-                            </div>
-                            <div className="flex-1 min-w-0">
-
-                                {/* Display new searchResult format for file analysis */}
-                                {webResults?.length > 0 && webResults[0]?.type === 'file_analysis' && (
-                                    <div className="space-y-1">
-                                        {webResults.map((result, index) => (
-                                            <div key={index} className="text-xs flex items-center space-x-2">
-                                                <span className="truncate">{result.title}</span>
-                                                {result.metadata?.size && (
-                                                    <span >
-                                                        ({result.metadata.size})
-                                                    </span>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Web Results Section - only show if Google API was used and not file analysis */}
-                {googleApiUsed && !isFileAnalysis && webResults?.length > 0 ? (
-                    <div>
-                        {/* First Row - Always Visible */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                            {firstRowCards.map((item, index) => (
-                                <CardComponent key={index} item={item} index={index} />
-                            ))}
-                        </div>
-
-                        {/* Remaining Rows - Collapsible */}
-                        {remainingCards.length > 0 && (
-                            <div className="space-y-4">
-                                {/* Collapsible Content */}
-                                <div className={`overflow-hidden transition-all duration-500 ease-in-out ${showAll ? 'max-h-none opacity-100' : 'max-h-0 opacity-0'
-                                    }`}>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pt-1">
-                                        {remainingCards.map((item, index) => (
-                                            <CardComponent key={cardsPerRow + index} item={item} index={cardsPerRow + index} />
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* Show All / Show Less Button */}
-                                <div className="flex items-end justify-end">
-                                    <button
-                                        onClick={() => setShowAll(!showAll)}
-                                        className="flex items-center gap-2 px-4 text-gray-500 dark:text-gray-400 text-sm font-medium rounded-lg cursor-pointer"
-                                    >
-                                        <span>{showAll ? 'Show Less' : `Show All (${remainingCards.length} more)`}</span>
-                                        {showAll ? (
-                                            <ChevronUp className="w-4 h-4" />
-                                        ) : (
-                                            <ChevronDown className="w-4 h-4" />
-                                        )}
-                                    </button>
-                                </div>
-                            </div>
-                        )}
-
-                        <hr className='my-5 text-gray-700 dark:border-gray-600' />
-                    </div>
-                ) : googleApiUsed && !isFileAnalysis ? (
-
-                    <div className="text-center py-12">
-                        <div className="w-16 h-16 bg-gray-100 dark:bg-gray-700 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <Globe className="w-8 h-8 text-gray-400 dark:text-gray-300" />
-                        </div>
-                        <h3 className="text-lg font-medium text-gray-600 dark:text-white mb-2">
-                            No web results found
-                        </h3>
-                        <p className="text-gray-500 dark:text-gray-400 text-sm">
-                            Try searching with different keywords or check your search query.
-                        </p>
-                    </div>
-                ) : null}
 
                 {/* AI Response Section - Now properly contained and scrollable */}
                 {isLoadingAnswer ? (
-                    <div className="w-full min-w-0 py-1 space-y-3">
+                    <div className="w-full min-w-0 space-y-3 py-1">
                         {researchProgress?.message && (
-                            <div className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-amber-500/15 text-amber-500 dark:text-amber-300">
-                                {researchProgress.message}
+                            <div className={PROGRESS_BADGE} role="status" aria-live="polite">
+                                <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-current" />
+                                <span className="text-[0.75rem] font-medium">{researchProgress.message}</span>
                             </div>
                         )}
-                        {/* Blinking cursor line — exactly like ChatGPT/Claude */}
-                        {/* <div className="flex items-center gap-1">
-                            <span
-                                className="inline-block w-[3px] h-[1.1em] rounded-full
-                                           bg-gray-400 dark:bg-zinc-400
-                                           animate-[blink_1s_step-start_infinite]"
-                                style={{ verticalAlign: 'text-bottom' }}
-                            />
-                        </div> */}
 
-                        {/* Shimmer skeleton lines */}
-                        <div className="space-y-2.5">
-                            <div className="h-3.5 w-[85%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse" />
-                            <div className="h-3.5 w-[70%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:150ms]" />
-                            <div className="h-3.5 w-[45%] rounded-full bg-gray-200 dark:bg-zinc-800 animate-pulse [animation-delay:300ms]" />
-                        </div>
+                        {/* Canva Design Generation Loading */}
+                        {selectedAppId === 'canva' ? (
+                            <div className="space-y-4">
+                                <CanvaLoadingCard />
+                            </div>
+                        ) : isThinkingMode ? (
+                            <ThinkingProcess isComplete={false} />
+                        ) : (
+                            /* Placeholder lines are sized to the real body rhythm
+                               (16px text on a 28px baseline) so the answer does
+                               not jump when it replaces them. */
+                            <div
+                                className={`${MEASURE} space-y-3`}
+                                role="status"
+                                aria-live="polite"
+                            >
+                                <span className="sr-only">Generating answer…</span>
+                                <div className="h-4 w-[88%] animate-pulse rounded-full bg-hover-2" />
+                                <div className="h-4 w-[72%] animate-pulse rounded-full bg-hover-2 [animation-delay:150ms]" />
+                                <div className="h-4 w-[80%] animate-pulse rounded-full bg-hover-2 [animation-delay:300ms]" />
+                                <div className="h-4 w-[45%] animate-pulse rounded-full bg-hover-2 [animation-delay:450ms]" />
+                            </div>
+                        )}
                     </div>
                 ) : currentSearchResult?.aiResp ? (
                     <div className="min-w-0 w-full overflow-hidden">
@@ -383,6 +261,7 @@ function AnswerDisplay({ searchResult, isLatestMessage = false, isLoadingAnswer 
                             analyzedFilesCount={analyzedFilesCount}
                             isLatestMessage={isLatestMessage}
                             resultId={currentSearchResult?.id}
+                            isThinkingMode={isThinkingMode}
                         />
                     </div>
                 ) : null}

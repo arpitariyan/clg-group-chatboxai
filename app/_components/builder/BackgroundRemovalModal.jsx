@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { X, Loader2 } from 'lucide-react'
+import { X, Loader2 } from '@/components/ui/animated-icon'
 import { removeBackground } from '@imgly/background-removal'
 
 export default function BackgroundRemovalModal({ imageUrl, onSave, onClose }) {

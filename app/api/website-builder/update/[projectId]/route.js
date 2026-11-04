@@ -3,16 +3,22 @@ import { databases, DB_ID } from '@/services/appwrite-admin';
 import {
     createWebsiteVersionDocument,
     ensureProjectOwnership,
-    updateWebsiteProjectCode
+    updateWebsiteProjectCode,
+    ensureTemplateFilesInCode,
+    normalizeWebsiteProject,
+    queueByKey
 } from '@/lib/website-builder-server-utils';
 import {
     WEBSITE_PROJECTS_COLLECTION_ID,
 } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
 
-export async function POST(request, { params }) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
-        const { projectId } = await params;
-        const { code, userEmail } = await request.json();
+        const { projectId } = await ctx.params;
+        const body = await request.json();
+        const { code } = body;
+        const userEmail = ctx.assertEmail(body.userEmail);
 
         if (!projectId) {
             return NextResponse.json(
@@ -54,36 +60,28 @@ export async function POST(request, { params }) {
             );
         }
 
-        // Create a new version entry
-        let newVersion;
-        try {
-            newVersion = await createWebsiteVersionDocument({
-                projectId,
-                code
-            });
-        } catch (versionError) {
-            console.error('Error creating version:', versionError);
-            return NextResponse.json(
-                { error: 'Failed to create version', details: versionError.message },
-                { status: 500 }
-            );
-        }
+        const normalizedProject = normalizeWebsiteProject(project);
+        const safeCode = ensureTemplateFilesInCode(code, normalizedProject.project_name);
 
-        // Update the project with new code and version
-        try {
-            await updateWebsiteProjectCode(projectId, code, newVersion.$id);
-        } catch (updateError) {
-            console.error('Error updating project:', updateError);
-            return NextResponse.json(
-                { error: 'Failed to update project', details: updateError.message },
-                { status: 500 }
-            );
-        }
+        const result = await queueByKey(projectId, async () => {
+            // Create a new version entry
+            const newVersion = await createWebsiteVersionDocument({
+                projectId,
+                code: safeCode
+            });
+
+            // Update the project with new code and version
+            await updateWebsiteProjectCode(projectId, safeCode, newVersion.$id);
+
+            return {
+                newVersion
+            };
+        });
 
         return NextResponse.json({
             success: true,
             message: `"${project.project_name}" updated successfully!`,
-            version_id: newVersion.$id
+            version_id: result.newVersion.$id
         });
 
     } catch (error) {
@@ -93,4 +91,4 @@ export async function POST(request, { params }) {
             { status: 500 }
         );
     }
-}
+});

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
 import { LOGIN_ACTIVITY_COLLECTION_ID } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
 
 // Detect browser name from User-Agent string
 function parseBrowser(ua = '') {
@@ -29,9 +30,11 @@ function parsePlatform(ua = '') {
  * Body: { email, method, userAgent }
  * Records a login event for the user.
  */
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
-        const { email, method, userAgent } = await request.json();
+        const body = await request.json().catch(() => ({}));
+        const { method, userAgent } = body;
+        const email = ctx.assertEmail(body.email);
 
         if (!email) {
             return NextResponse.json({ error: 'email is required' }, { status: 400 });
@@ -56,16 +59,16 @@ export async function POST(request) {
         // Non-critical — don't block the login flow if this fails
         return NextResponse.json({ success: false, error: error.message }, { status: 500 });
     }
-}
+}, { requireVerified: false });
 
 /**
  * GET /api/auth/login-activity?email=...
  * Returns the last 10 login events for a user, newest first.
  */
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
     try {
         const { searchParams } = new URL(request.url);
-        const email = (searchParams.get('email') || '').trim().toLowerCase();
+        const email = ctx.assertEmail(searchParams.get('email'));
 
         if (!email) {
             return NextResponse.json({ error: 'email is required' }, { status: 400 });
@@ -82,4 +85,4 @@ export async function GET(request) {
         console.error('Login activity GET error:', error);
         return NextResponse.json({ success: false, error: error.message, events: [] }, { status: 500 });
     }
-}
+});

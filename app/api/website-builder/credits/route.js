@@ -4,6 +4,7 @@ import {
     USERS_COLLECTION_ID,
     WEBSITE_USER_CREDITS_COLLECTION_ID
 } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
 
 async function getOrCreateUserCredits(userEmail, isPro) {
     const res = await databases.listDocuments(DB_ID, WEBSITE_USER_CREDITS_COLLECTION_ID, [
@@ -40,10 +41,10 @@ async function getOrCreateUserCredits(userEmail, isPro) {
  * GET /api/website-builder/credits
  * Fetches the current user's website builder credit balance
  */
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
     try {
         const url = new URL(request.url);
-        const userEmail = url.searchParams.get('email');
+        const userEmail = ctx.assertEmail(url.searchParams.get('email'));
 
         if (!userEmail) {
             return NextResponse.json(
@@ -87,4 +88,4 @@ export async function GET(request) {
             { status: 500 }
         );
     }
-}
+});

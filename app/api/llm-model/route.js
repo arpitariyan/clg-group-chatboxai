@@ -1,11 +1,19 @@
 import { inngest } from "@/inngest/client";
 import { NextResponse } from "next/server";
-import { getRandomModel } from "@/services/Shared";
+import { getRandomModel, getResponseStyleProfile, resolveModel } from "@/services/Shared";
+import { AuthError, authErrorResponse, normalizeEmail, resolveRequestUserEmail } from '@/lib/server-auth';
+import { classifyRequest } from '@/lib/request-classifier';
 
 export async function POST(req) {
     let recordId; // Declare recordId outside try block for error handling
     
     try {
+        let authenticatedEmail = null;
+        try {
+            authenticatedEmail = await resolveRequestUserEmail(req);
+        } catch {
+            authenticatedEmail = null;
+        }
         // console.log('LLM Model API called');
         const {
             searchInput,
@@ -16,19 +24,27 @@ export async function POST(req) {
             useDirectModel,
             responseMode,
             detailLevel,
+            responseStyle,
+            responseMaxTokens,
             citationMode,
-            languageMode
+            languageMode,
+            userEmail,
+            user_email,
+            conversationHistory = [],
+            memoryEnabled = true,
+            selectedAppId = null,
+            userPlan = 'free',          // ← NEW: subscription plan from client
+            isThinkingMode = false,
+            effortLevel = 'auto',
         } = await req.json();
+        const requestedEmail = normalizeEmail(userEmail || user_email);
+        if (requestedEmail && authenticatedEmail && requestedEmail !== authenticatedEmail) {
+            return NextResponse.json(
+                { error: 'FORBIDDEN', message: 'Requested user email does not match authenticated session.' },
+                { status: 403 }
+            );
+        }
         recordId = reqRecordId; // Assign to outer scope variable
-
-        // console.log('LLM Model API request data:', {
-        //     searchInputLength: searchInput?.length || 0,
-        //     searchResultCount: searchResult?.length || 0,
-        //     recordId,
-        //     selectedModel: selectedModel?.name || selectedModel?.id || 'Unknown',
-        //     isPro: isPro,
-        //     useDirectModel: useDirectModel
-        // });
 
         // Validate required inputs
         if (!searchInput || !recordId) {
@@ -42,19 +58,26 @@ export async function POST(req) {
             );
         }
 
-        // Handle Auto model selection
-        let finalSelectedModel = selectedModel;
+        // ── Classify the request (lightweight, no LLM call) ──────────────────
+                    const { requestClass, estimatedInputTokens, expectedOutputTokens, recommendedMinTier, userIntent } =
+                        classifyRequest(searchInput, {
+                            responseMode: responseMode === 'research' ? 'research' : 'search',
+                        });
 
-        // If model is Auto or missing, select a random model based on plan
-        if (!selectedModel || selectedModel.modelApi === 'auto' || selectedModel.id === 1) {
-            finalSelectedModel = getRandomModel(isPro === true);
-            // console.log(`Auto model selected: ${finalSelectedModel.name} (${finalSelectedModel.modelApi}) for ${isPro ? 'Pro' : 'Free'} user`);
-        }
+        // Handle Auto and Manual model selection robustly
+        let finalSelectedModel = resolveModel(selectedModel, userPlan || (isPro ? 'pro' : 'free'), responseMode === 'research');
 
         // Validate selectedModel
         if (!finalSelectedModel) {
             console.warn('No valid model available after selection');
-            finalSelectedModel = { id: 'provider-8/gemini-2.0-flash', name: 'Gemini 2.0 Flash' };
+            // Fallback to tier-appropriate model instead of always using Gemini
+            finalSelectedModel = getRandomModel(userPlan || (isPro ? 'pro' : 'free'), responseMode === 'research');
+            if (!finalSelectedModel) {
+                // Last resort: hardcoded fallback with tier validation
+                finalSelectedModel = (userPlan === 'pro' || userPlan === 'max' || isPro) 
+                    ? { id: 'provider-8/gemini-2.0-pro', name: 'Gemini 2.0 Pro', modelApi: 'gemini-2.0-pro', isPro: true, accessTier: 'pro' }
+                    : { id: 'provider-8/gemini-2.5-flash', name: 'Gemini 2.5 Flash', modelApi: 'gemini-2.5-flash', isPro: false, accessTier: 'free' };
+            }
         }
 
         // console.log('Final model to use:', finalSelectedModel.name);
@@ -62,9 +85,26 @@ export async function POST(req) {
 
         let inngestRunId;
         try {
-            const normalizedDetailLevel = ['brief', 'balanced', 'detailed'].includes(detailLevel) ? detailLevel : 'detailed';
+            const derivedResponseStyle = getResponseStyleProfile({
+                prompt: searchInput,
+                model: finalSelectedModel,
+                responseMode: responseMode === 'research' ? 'research' : 'search',
+            });
+
+            const normalizedDetailLevel = ['brief', 'balanced', 'detailed'].includes(responseStyle?.detailLevel)
+                ? responseStyle.detailLevel
+                : (['brief', 'balanced', 'detailed'].includes(detailLevel) ? detailLevel : derivedResponseStyle.detailLevel);
             const normalizedCitationMode = ['enabled', 'auto', 'disabled'].includes(citationMode) ? citationMode : 'enabled';
             const normalizedLanguageMode = ['auto', 'english', 'hindi', 'hinglish'].includes(languageMode) ? languageMode : 'auto';
+            const normalizedMaxTokens = Number.isFinite(Number(responseMaxTokens)) && Number(responseMaxTokens) > 0
+                ? Number(responseMaxTokens)
+                : derivedResponseStyle.maxOutputTokens;
+            const normalizedResponseStyle = {
+                ...derivedResponseStyle,
+                ...((responseStyle && typeof responseStyle === 'object') ? responseStyle : {}),
+                detailLevel: normalizedDetailLevel,
+                maxOutputTokens: normalizedMaxTokens,
+            };
 
             inngestRunId = await inngest.send({
                 name: "llm-model",
@@ -77,8 +117,24 @@ export async function POST(req) {
                     useDirectModel: useDirectModel === true, // Flag indicating Google API failed
                     responseMode: responseMode === 'research' ? 'research' : 'search',
                     detailLevel: normalizedDetailLevel,
+                    responseStyle: normalizedResponseStyle,
+                    responseMaxTokens: normalizedResponseStyle.maxOutputTokens,
                     citationMode: normalizedCitationMode,
-                    languageMode: normalizedLanguageMode
+                    languageMode: normalizedLanguageMode,
+                    userEmail: authenticatedEmail, // Always use server-authenticated identity
+                    userPlan: userPlan || 'free',   // ← NEW: pass plan for budget router
+                    // Budget classification hints — pre-computed so Inngest doesn't re-classify
+                    requestClass,
+                    estimatedInputTokens,
+                    expectedOutputTokens,
+                    recommendedMinTier,
+                    userIntent,
+                    // Pass the conversation history strictly based on feature flag
+                    conversationHistory: process.env.ENABLE_SHORT_TERM_MEMORY === 'true' ? conversationHistory : [],
+                    memoryEnabled,
+                    selectedAppId: selectedAppId || null,
+                    isThinkingMode: isThinkingMode === true,
+                    effortLevel: effortLevel || 'auto',
                 },
             });
         } catch (inngestError) {
@@ -120,14 +176,18 @@ export async function POST(req) {
         return NextResponse.json(runId);
 
     } catch (error) {
+        if (error instanceof AuthError) {
+            return authErrorResponse(error, 'Authentication is required for AI generation.');
+        }
         console.error('Error in LLM Model API:', error);
+        console.error('Stack Trace:', error?.stack);
 
         // More specific error handling
         let errorMessage = 'Failed to start LLM process';
         let statusCode = 500;
 
-        if (error.message?.includes('Inngest')) {
-            errorMessage = 'AI processing service unavailable. Please try again.';
+        if (error.message?.includes('Inngest') || error.message?.includes('PayloadTooLargeError') || error.message?.includes('entity too large')) {
+            errorMessage = 'AI processing service unavailable or payload too large. Please try again.';
             statusCode = 503;
         } else if (error.message?.includes('validation') || error.message?.includes('required')) {
             errorMessage = 'Invalid request data. Please check your input.';
@@ -143,7 +203,7 @@ export async function POST(req) {
         return NextResponse.json(
             {
                 error: errorMessage,
-                details: process.env.NODE_ENV === 'development' ? error.message : undefined,
+                details: error.message || 'Unknown error occurred',
                 timestamp: new Date().toISOString(),
                 requestId: recordId
             },

@@ -2,6 +2,11 @@ import { NextResponse } from 'next/server';
 import { APPWRITE_COLLECTIONS, isPlaceholderCollectionId } from '@/services/appwrite-collections';
 
 export async function GET() {
+  // SECURITY: Block this diagnostic endpoint in production
+  if (process.env.NODE_ENV === 'production') {
+    return new NextResponse(null, { status: 404 });
+  }
+
   try {
     const collectionEnvHealth = APPWRITE_COLLECTIONS.map((collection) => ({
       key: collection.key,

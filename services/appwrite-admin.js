@@ -38,11 +38,17 @@ export const DB_ID = appwriteDatabaseId;
 export const BUCKET_ID = resolvedBucketId;
 
 /**
- * Returns the public URL for a file stored in Appwrite Storage.
- * @param {string} fileId - The $id of the uploaded file.
+ * Returns the admin URL for a file stored in Appwrite Storage (for server-side use).
  */
 export function getFileUrl(fileId) {
     return `${appwriteEndpoint}/storage/buckets/${resolvedBucketId}/files/${fileId}/view?project=${appwriteProjectId}&mode=admin`;
+}
+
+/**
+ * Returns the public URL for a file stored in Appwrite Storage (for client-side use).
+ */
+export function getPublicFileUrl(fileId) {
+    return `${appwriteEndpoint}/storage/buckets/${resolvedBucketId}/files/${fileId}/view?project=${appwriteProjectId}`;
 }
 
 export function createAppwriteFile(buffer, fileName, mimeType = 'application/octet-stream') {

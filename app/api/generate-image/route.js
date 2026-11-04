@@ -4,17 +4,36 @@ import { IMAGE_GENERATION_COLLECTION_ID } from '@/services/appwrite-collections'
 import { v4 as uuidv4 } from 'uuid';
 import { checkImageGenerationLimit } from '@/lib/planUtils-server';
 import sharp from 'sharp';
-import { DEFAULT_MODEL_ID, IMAGE_MODELS, getModelById, getProviderIdByModelId } from '@/lib/hf-image-config';
+import {
+    DEFAULT_MODEL_ID,
+    DEFAULT_PROVIDER_ID,
+    IMAGE_MODELS,
+    getModelById,
+    getProviderIdByModelId,
+    GENERATION_MODES,
+    supportsImageToImage,
+    getDefaultImageToImageModelForProvider,
+} from '@/lib/hf-image-config';
+import { withUser } from '@/lib/request-context';
+import { generateImage } from '@/lib/image-providers/index.js';
+import {
+    ImageProviderError,
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderRateLimitError,
+    ProviderContentPolicyError,
+    ProviderBadRequestError,
+    ProviderTimeoutError,
+    ProviderUnavailableError,
+} from '@/lib/image-providers/provider-errors.js';
 
-const HF_API_BASE = 'https://router.huggingface.co/hf-inference/models';
-const HF_MAX_RETRIES = 3;
-const HF_RETRY_DELAY_MS = 20000;
-
-const LEONARDO_API_BASE = (process.env.LEONARDO_API_BASE || process.env.LEONARDO_BASE_URL || 'https://cloud.leonardo.ai/api/rest/v1').trim();
-const LEONARDO_MAX_POLL_ATTEMPTS = 40;
-const LEONARDO_POLL_INTERVAL_MS = 1500;
 const APPWRITE_PUBLIC_ENDPOINT = process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT || process.env.APPWRITE_ENDPOINT || 'https://cloud.appwrite.io/v1';
 const APPWRITE_PUBLIC_PROJECT_ID = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID || process.env.APPWRITE_PROJECT_ID || '';
+
+/**
+ * Maximum reference image size: 20MB as base64 or 100MB as file from storage.
+ */
+const MAX_REFERENCE_IMAGE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
 
 function getPublicFileUrl(fileId) {
     return `${APPWRITE_PUBLIC_ENDPOINT}/storage/buckets/${BUCKET_ID}/files/${fileId}/view?project=${APPWRITE_PUBLIC_PROJECT_ID}`;
@@ -42,6 +61,148 @@ function normalizeDisplayUrl(rawUrl) {
     }
 }
 
+function enhancePromptForQuality(prompt, { aspectRatio = '', generationMode = GENERATION_MODES.TEXT_TO_IMAGE } = {}) {
+    const normalizedPrompt = String(prompt || '').trim().replace(/\s+/g, ' ');
+    if (!normalizedPrompt) return normalizedPrompt;
+
+    const wordCount = normalizedPrompt.split(' ').filter(Boolean).length;
+    let qualitySuffix = 'high quality, detailed, clean composition';
+
+    if (wordCount >= 20) {
+        qualitySuffix = 'ultra-detailed, refined lighting, sharp focus, rich texture detail';
+    } else if (wordCount >= 10) {
+        qualitySuffix = 'highly detailed, polished lighting, crisp textures';
+    }
+
+    const aspectRatioCue = aspectRatio && aspectRatio !== '1:1'
+        ? `balanced composition optimized for ${aspectRatio}`
+        : 'balanced composition';
+
+    const editCue = generationMode === GENERATION_MODES.IMAGE_TO_IMAGE
+        ? 'preserve the original structure while refining the requested changes'
+        : 'strong visual clarity and coherent composition';
+
+    return `${normalizedPrompt}, ${qualitySuffix}, ${aspectRatioCue}, ${editCue}`;
+}
+
+/**
+ * Fetch reference image from a URL and convert to Buffer.
+ */
+async function fetchReferenceImageBuffer(imageUrl) {
+    if (!imageUrl || typeof imageUrl !== 'string') {
+        throw new Error('Reference image URL is required for image-to-image mode.');
+    }
+
+    try {
+        const response = await fetch(imageUrl, { timeout: 10000 });
+        if (!response.ok) {
+            throw new Error(`Failed to fetch reference image (${response.status}): ${response.statusText}`);
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!['image/jpeg', 'image/png', 'image/webp'].includes(contentType)) {
+            throw new Error(`Invalid reference image format. Expected JPEG, PNG, or WebP; got ${contentType}`);
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        if (arrayBuffer.byteLength > MAX_REFERENCE_IMAGE_SIZE_BYTES) {
+            throw new Error(`Reference image is too large (${(arrayBuffer.byteLength / 1024 / 1024).toFixed(1)}MB). Max size is 20MB.`);
+        }
+
+        return Buffer.from(arrayBuffer);
+    } catch (error) {
+        if (error.message.includes('Reference image') || error.message.includes('Invalid') || error.message.includes('too large')) {
+            throw error;
+        }
+        throw new Error(`Failed to load reference image: ${error.message}`);
+    }
+}
+
+/**
+ * Decode base64 image string to Buffer.
+ */
+function decodeBase64ReferenceImage(base64String) {
+    if (!base64String || typeof base64String !== 'string') {
+        throw new Error('Reference image base64 is required for image-to-image mode.');
+    }
+
+    try {
+        let base64Data = base64String;
+        if (base64Data.includes(',')) {
+            const parts = base64Data.split(',');
+            base64Data = parts[1];
+        }
+
+        const buffer = Buffer.from(base64Data, 'base64');
+        if (buffer.byteLength > MAX_REFERENCE_IMAGE_SIZE_BYTES) {
+            throw new Error(`Reference image is too large (${(buffer.byteLength / 1024 / 1024).toFixed(1)}MB). Max size is 20MB.`);
+        }
+
+        return buffer;
+    } catch (error) {
+        if (error.message.includes('too large')) {
+            throw error;
+        }
+        throw new Error(`Failed to decode reference image: ${error.message}`);
+    }
+}
+
+/**
+ * Parse and normalize reference image from request.
+ */
+async function parseReferenceImage(referenceImageUrl, referenceImageBase64) {
+    if (!referenceImageUrl && !referenceImageBase64) {
+        return null;
+    }
+
+    if (referenceImageBase64) {
+        return decodeBase64ReferenceImage(referenceImageBase64);
+    }
+
+    if (referenceImageUrl) {
+        return fetchReferenceImageBuffer(referenceImageUrl);
+    }
+
+    return null;
+}
+
+/**
+ * Determine the generation mode based on whether a reference image is present.
+ */
+function determineGenerationMode(referenceImageBuffer, selectedModel, selectedProvider) {
+    const isEditMode = referenceImageBuffer !== null && referenceImageBuffer !== undefined;
+
+    if (!isEditMode) {
+        return {
+            mode: GENERATION_MODES.TEXT_TO_IMAGE,
+            shouldAutoSwitchModel: false,
+            recommendedModelId: null,
+        };
+    }
+
+    if (supportsImageToImage(selectedModel)) {
+        return {
+            mode: GENERATION_MODES.IMAGE_TO_IMAGE,
+            shouldAutoSwitchModel: false,
+            recommendedModelId: null,
+        };
+    }
+
+    const recommendedModel = getDefaultImageToImageModelForProvider(selectedProvider) || getDefaultImageToImageModelForProvider('huggingface');
+    if (!recommendedModel) {
+        throw new Error(
+            `Reference image provided but selected model "${selectedModel}" does not support image editing. ` +
+            `No alternative edit-capable model is available.`
+        );
+    }
+
+    return {
+        mode: GENERATION_MODES.IMAGE_TO_IMAGE,
+        shouldAutoSwitchModel: true,
+        recommendedModelId: recommendedModel.id,
+    };
+}
+
 function normalizeGenerationDocument(doc) {
     if (!doc) return doc;
 
@@ -57,378 +218,53 @@ function normalizeGenerationDocument(doc) {
     };
 }
 
-function getHFAPIKeysInOrder() {
-    const keySlots = [
-        [
-            // process.env.HF_API_KEY_1,
-            // process.env.HUGGINGFACE_API_KEY_1,
-            // process.env.HF_API_KEY,
-            // process.env.HUGGINGFACE_API_KEY,
-            process.env.NEXT_PUBLIC_HF_API_KEY,
-        ],
-        [
-            // process.env.HF_API_KEY_2,
-            // process.env.HUGGINGFACE_API_KEY_2,
-            process.env.NEXT_PUBLIC_HF_API_KEY_2,
-        ],
-        [
-            // process.env.HF_API_KEY_3,
-            // process.env.HUGGINGFACE_API_KEY_3,
-            process.env.NEXT_PUBLIC_HF_API_KEY_3,
-        ],
-        [
-            // process.env.HF_API_KEY_4,
-            // process.env.HUGGINGFACE_API_KEY_4,
-            process.env.NEXT_PUBLIC_HF_API_KEY_4,
-        ],
-    ];
-
-    const normalized = keySlots
-        .map((slot) => slot.find((value) => value && value.trim() !== '')?.trim())
-        .filter(Boolean);
-
-    // Prevent trying the same key multiple times when aliases are configured.
-    return [...new Set(normalized)];
-}
-
-/**
- * Call the Hugging Face Inference API for text-to-image generation.
- * Retries up to HF_MAX_RETRIES times on 503 (model cold-start).
- * Returns a Buffer containing the raw image bytes.
- */
-async function generateHFImage(prompt, modelId, width, height) {
-    const apiKeys = getHFAPIKeysInOrder();
-    if (apiKeys.length === 0) {
-        throw new Error('Hugging Face API key is not configured. Add HF_API_KEY_1 (and optional HF_API_KEY_2/3/4) to your .env file.');
-    }
-
-    const url = `${HF_API_BASE}/${modelId}`;
-    const keyErrors = [];
-
-    for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex++) {
-        const apiKey = apiKeys[keyIndex];
-
-        for (let attempt = 1; attempt <= HF_MAX_RETRIES; attempt++) {
-            let response;
-            try {
-                response = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${apiKey}`,
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        inputs: prompt,
-                        parameters: { width, height },
-                    }),
-                });
-            } catch (networkError) {
-                keyErrors.push(`Key #${keyIndex + 1} network error: ${networkError.message}`);
-                break;
-            }
-
-            if (response.status === 503) {
-                let waitMs = HF_RETRY_DELAY_MS;
-                try {
-                    const body = await response.json();
-                    if (body?.estimated_time) {
-                        waitMs = Math.min(body.estimated_time * 1000, HF_RETRY_DELAY_MS);
-                    }
-                } catch (_) {}
-                if (attempt < HF_MAX_RETRIES) {
-                    console.warn(`HF model loading (503), key #${keyIndex + 1}, attempt ${attempt}/${HF_MAX_RETRIES}. Waiting ${waitMs}ms...`);
-                    await new Promise((r) => setTimeout(r, waitMs));
-                    continue;
-                }
-                keyErrors.push(`Key #${keyIndex + 1} unavailable after ${HF_MAX_RETRIES} attempts (503 model loading).`);
-                break;
-            }
-
-            if (response.ok) {
-                const arrayBuffer = await response.arrayBuffer();
-                return Buffer.from(arrayBuffer);
-            }
-
-            let msg = response.statusText;
-            try {
-                const body = await response.json();
-                msg = body?.error || body?.message || msg;
-            } catch (_) {}
-
-            // Invalid prompt/content/safety errors should fail fast (no key fallback needed).
-            if (response.status === 400) {
-                throw new Error(`Hugging Face API error ${response.status}: ${msg}`);
-            }
-
-            // Key/auth/quota/server style errors: move to next configured key.
-            if ([401, 403, 429, 500, 502, 504].includes(response.status)) {
-                keyErrors.push(`Key #${keyIndex + 1} failed with ${response.status}: ${msg}`);
-                break;
-            }
-
-            keyErrors.push(`Key #${keyIndex + 1} failed with ${response.status}: ${msg}`);
-            break;
-        }
-    }
-
-    throw new Error(`All configured Hugging Face API keys failed. ${keyErrors.join(' | ')}`);
-}
-
-function getLeonardoApiKeysInOrder() {
-    const keySlots = [
-        [
-            // process.env.LEONARDO_API_KEY_1,
-            // process.env.LEONARDOAI_API_KEY_1,
-            process.env.LEONARDO_API_KEY,
-            // process.env.LEONARDOAI_API_KEY,
-            // process.env.LEONARDO_KEY,
-            // process.env.NEXT_PUBLIC_LEONARDO_API_KEY,
-        ],
-        [
-            process.env.LEONARDO_API_KEY_2,
-            // process.env.LEONARDOAI_API_KEY_2,
-            // process.env.NEXT_PUBLIC_LEONARDO_API_KEY_2,
-        ],
-        [
-            process.env.LEONARDO_API_KEY_3,
-            // process.env.LEONARDOAI_API_KEY_3,
-            // process.env.NEXT_PUBLIC_LEONARDO_API_KEY_3,
-        ],
-        [
-            process.env.LEONARDO_API_KEY_4,
-            // process.env.LEONARDOAI_API_KEY_4,
-            // process.env.NEXT_PUBLIC_LEONARDO_API_KEY_4,
-        ],
-    ];
-
-    const normalized = keySlots
-        .map((slot) => slot.find((value) => value && value.trim() !== '')?.trim())
-        .filter(Boolean);
-
-    // Prevent duplicate attempts when aliases reference the same key.
-    return [...new Set(normalized)];
-}
-
-function extractLeonardoGenerationId(payload) {
-    return payload?.sdGenerationJob?.generationId
-        || payload?.generationId
-        || payload?.id
-        || payload?.data?.generationId
-        || payload?.data?.id
-        || null;
-}
-
-function extractLeonardoStatus(payload) {
-    return payload?.status
-        || payload?.sdGenerationJob?.status
-        || payload?.generations_by_pk?.status
-        || payload?.generation?.status
-        || null;
-}
-
-function extractLeonardoImageUrl(payload) {
-    return payload?.generated_images?.[0]?.url
-        || payload?.generation?.generated_images?.[0]?.url
-        || payload?.generations_by_pk?.generated_images?.[0]?.url
-        || payload?.data?.generated_images?.[0]?.url
-        || payload?.data?.generation?.generated_images?.[0]?.url
-        || payload?.generatedImages?.[0]?.url
-        || payload?.images?.[0]?.url
-        || payload?.imageUrl
-        || payload?.url
-        || null;
-}
-
-function mapLeonardoError(status, bodyText) {
-    if (status === 401 || status === 403) {
-        return `Leonardo authentication failed (${status}). ${bodyText}`;
-    }
-    if (status === 429) {
-        return `Leonardo rate limit reached (429). ${bodyText}`;
-    }
-    if (status === 400) {
-        return `Leonardo request validation failed (400). ${bodyText}`;
-    }
-    return `Leonardo API error ${status}. ${bodyText}`;
-}
-
-function isLeonardoFallbackStatus(status) {
-    return [401, 403, 429, 500, 502, 503, 504].includes(status);
-}
-
-function normalizeLeonardoDimensions(width, height) {
-    // Backward compatibility: an earlier config exposed 1376x786, but Leonardo expects 1376x768.
-    if (width === 1376 && height === 786) {
-        return { width: 1376, height: 768 };
-    }
-
-    // Backward compatibility: older UI values used FLUX HF-oriented 9:16 dimensions.
-    if (width === 768 && height === 1360) {
-        return { width: 768, height: 1376 };
-    }
-
-    return { width, height };
-}
-
-function isLeonardoDimensionInApiRange(width, height) {
-    const valid = (value) => Number.isInteger(value) && value >= 32 && value <= 1536 && value % 8 === 0;
-    return valid(width) && valid(height);
-}
-
-async function parseResponsePayload(response) {
-    if (response.headers.get('content-type')?.includes('application/json')) {
-        return response.json();
-    }
-    const text = await response.text();
-    return { message: text };
-}
-
-async function generateLeonardoImageWithKey(apiKey, prompt, modelId, width, height) {
-    const createResponse = await fetch(`${LEONARDO_API_BASE}/generations`, {
-        method: 'POST',
-        headers: {
-            accept: 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            modelId,
-            prompt,
-            width,
-            height,
-            num_images: 1,
-            contrast: 3.5,
-            enhancePrompt: false,
-        }),
-    });
-
-    const createPayload = await parseResponsePayload(createResponse);
-    if (!createResponse.ok) {
-        const bodyText = createPayload?.error || createPayload?.message || createResponse.statusText;
-        const error = new Error(mapLeonardoError(createResponse.status, bodyText));
-        error.status = createResponse.status;
-        throw error;
-    }
-
-    const generationId = extractLeonardoGenerationId(createPayload);
-    if (!generationId) {
-        throw new Error('Leonardo did not return a generation id.');
-    }
-
-    let finalImageUrl = extractLeonardoImageUrl(createPayload);
-
-    if (!finalImageUrl) {
-        for (let attempt = 1; attempt <= LEONARDO_MAX_POLL_ATTEMPTS; attempt++) {
-            const pollResponse = await fetch(`${LEONARDO_API_BASE}/generations/${generationId}`, {
-                method: 'GET',
-                headers: {
-                    accept: 'application/json',
-                    Authorization: `Bearer ${apiKey}`,
-                },
-            });
-
-            const pollPayload = await parseResponsePayload(pollResponse);
-            if (!pollResponse.ok) {
-                const bodyText = pollPayload?.error || pollPayload?.message || pollResponse.statusText;
-                const error = new Error(mapLeonardoError(pollResponse.status, bodyText));
-                error.status = pollResponse.status;
-                throw error;
-            }
-
-            finalImageUrl = extractLeonardoImageUrl(pollPayload);
-            const status = (extractLeonardoStatus(pollPayload) || '').toString().toUpperCase();
-
-            if (finalImageUrl) {
-                break;
-            }
-
-            if (status.includes('FAIL') || status.includes('ERROR') || status.includes('CANCEL')) {
-                throw new Error(`Leonardo generation failed with status: ${status || 'UNKNOWN'}`);
-            }
-
-            if (attempt < LEONARDO_MAX_POLL_ATTEMPTS) {
-                await new Promise((resolve) => setTimeout(resolve, LEONARDO_POLL_INTERVAL_MS));
-            }
-        }
-    }
-
-    if (!finalImageUrl) {
-        throw new Error('Leonardo generation timed out before an image URL was available.');
-    }
-
-    const imageResponse = await fetch(finalImageUrl);
-    if (!imageResponse.ok) {
-        throw new Error(`Failed to download generated Leonardo image (${imageResponse.status}).`);
-    }
-
-    const arrayBuffer = await imageResponse.arrayBuffer();
-    return Buffer.from(arrayBuffer);
-}
-
-async function generateLeonardoImage(prompt, modelId, width, height) {
-    const apiKeys = getLeonardoApiKeysInOrder();
-    if (apiKeys.length === 0) {
-        throw new Error('Leonardo API key is not configured. Add LEONARDO_API_KEY_1 (or LEONARDO_API_KEY) and optional LEONARDO_API_KEY_2/3/4 to your .env.local.');
-    }
-
-    const keyErrors = [];
-
-    for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex++) {
-        const apiKey = apiKeys[keyIndex];
-        try {
-            return await generateLeonardoImageWithKey(apiKey, prompt, modelId, width, height);
-        } catch (error) {
-            const status = error?.status;
-            const message = error?.message || 'Unknown Leonardo error';
-
-            // Request/prompt validation errors should fail fast without trying other keys.
-            if (status === 400) {
-                throw error;
-            }
-
-            // Switch to the next key only for key/quota/upstream issues.
-            if (status && isLeonardoFallbackStatus(status)) {
-                keyErrors.push(`Key #${keyIndex + 1} failed with ${status}: ${message}`);
-                continue;
-            }
-
-            // Network-level failures can be key or transient-route related; attempt next key.
-            if (error instanceof TypeError) {
-                keyErrors.push(`Key #${keyIndex + 1} network error: ${message}`);
-                continue;
-            }
-
-            // Non-key runtime failures should surface immediately.
-            throw error;
-        }
-    }
-
-    throw new Error(`All configured Leonardo API keys failed. ${keyErrors.join(' | ')}`);
-}
-
-// GET method for fetching generation status
-export async function GET(request) {
+// GET method for fetching generation status and history
+export const GET = withUser(async function GET(request, ctx) {
     const { searchParams } = new URL(request.url);
     const libId = searchParams.get('libId');
-    const userEmail = searchParams.get('userEmail');
+    const userEmail = ctx.assertEmail(searchParams.get('userEmail'));
 
     if (!libId) {
         return NextResponse.json({ error: 'libId is required' }, { status: 400 });
     }
 
     try {
-        const queries = [
-            Query.equal('libId', libId),
-            Query.orderDesc('$createdAt'),
-            Query.limit(200),
-        ];
-
-        if (userEmail) {
-            queries.unshift(Query.equal('userEmail', userEmail));
+        let documents = [];
+        try {
+            const queries = [
+                Query.equal('libId', libId),
+                Query.equal('userEmail', userEmail),
+                Query.orderDesc('$createdAt'),
+                Query.limit(200),
+            ];
+            const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, queries);
+            documents = res.documents || [];
+        } catch (queryErr) {
+            console.warn('Primary image generation query failed, falling back:', queryErr?.message);
+            try {
+                const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+                    Query.equal('libId', libId),
+                    Query.equal('userEmail', userEmail),
+                    Query.limit(200),
+                ]);
+                documents = res.documents || [];
+            } catch (fallback1Err) {
+                console.warn('Second query failed, querying by libId only:', fallback1Err?.message);
+                const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, [
+                    Query.equal('libId', libId),
+                    Query.limit(200),
+                ]);
+                documents = (res.documents || []).filter(doc => !doc.userEmail || doc.userEmail === userEmail);
+            }
         }
 
-        const res = await databases.listDocuments(DB_ID, IMAGE_GENERATION_COLLECTION_ID, queries);
-        const normalizedGenerations = (res.documents || []).map(normalizeGenerationDocument);
+        documents.sort((a, b) => {
+            const timeA = new Date(a.$createdAt || a.created_at || 0).getTime();
+            const timeB = new Date(b.$createdAt || b.created_at || 0).getTime();
+            return timeB - timeA;
+        });
+
+        const normalizedGenerations = documents.map(normalizeGenerationDocument);
 
         return NextResponse.json({
             success: true,
@@ -437,19 +273,31 @@ export async function GET(request) {
         });
     } catch (error) {
         console.error('Error fetching image generation:', error);
-        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+        return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
     }
-}
+}, { requireVerified: false });
 
 // POST method for generating images
-export async function POST(request) {
-    // Declared outside try so they are accessible in the catch block
+export const POST = withUser(async function POST(request, ctx) {
     let generationId;
     let docId;
-    let selectedProvider = 'huggingface';
+    let selectedProvider = DEFAULT_PROVIDER_ID;
 
     try {
-        const { prompt, model, width, height, referenceImage, libId, userEmail, provider } = await request.json();
+        const body = await request.json();
+        const {
+            prompt,
+            model,
+            width,
+            height,
+            referenceImage,
+            referenceImageBase64,
+            generationType: requestedGenerationType,
+            libId,
+            provider,
+            processingMode = 'crop_to_fill',
+        } = body;
+        const userEmail = ctx.assertEmail(body.userEmail);
 
         if (!prompt) {
             return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
@@ -459,7 +307,18 @@ export async function POST(request) {
             return NextResponse.json({ error: 'User email is required' }, { status: 400 });
         }
 
-        // Check user's plan and daily image generation limit
+        // Parse and normalize reference image from either URL or base64 payload
+        let referenceImageBuffer = null;
+        try {
+            referenceImageBuffer = await parseReferenceImage(referenceImage, referenceImageBase64);
+        } catch (parseError) {
+            return NextResponse.json({
+                error: 'Invalid reference image',
+                details: parseError.message,
+            }, { status: 400 });
+        }
+
+        // Check user plan limit
         const limitCheck = await checkImageGenerationLimit(userEmail);
         if (!limitCheck.canGenerate) {
             return NextResponse.json({
@@ -476,7 +335,7 @@ export async function POST(request) {
         const selectedModel = model || DEFAULT_MODEL_ID;
 
         const providerFromModel = getProviderIdByModelId(selectedModel);
-        selectedProvider = provider || providerFromModel;
+        selectedProvider = provider || providerFromModel || DEFAULT_PROVIDER_ID;
 
         const modelConfig = getModelById(selectedModel, selectedProvider);
         if (!modelConfig || modelConfig.id !== selectedModel) {
@@ -495,7 +354,7 @@ export async function POST(request) {
 
         selectedProvider = modelConfig.provider;
 
-        // Normalize dimension types because some stored values can arrive as strings.
+        // Normalize dimension numbers
         const requestedWidth = width !== undefined && width !== null ? Number(width) : null;
         const requestedHeight = height !== undefined && height !== null ? Number(height) : null;
 
@@ -506,38 +365,72 @@ export async function POST(request) {
             }, { status: 400 });
         }
 
-        // Validate dimensions against this model's supported ratios
         let targetWidth = Number.isFinite(requestedWidth) ? Math.trunc(requestedWidth) : modelConfig.ratios[0].width;
         let targetHeight = Number.isFinite(requestedHeight) ? Math.trunc(requestedHeight) : modelConfig.ratios[0].height;
 
-        if (selectedProvider === 'leonardo') {
-            const normalized = normalizeLeonardoDimensions(targetWidth, targetHeight);
-            targetWidth = normalized.width;
-            targetHeight = normalized.height;
-        }
-
         const matchedRatio = modelConfig.ratios.find((r) => r.width === targetWidth && r.height === targetHeight);
-        const allowLeonardoCustomDimension = selectedProvider === 'leonardo' && isLeonardoDimensionInApiRange(targetWidth, targetHeight);
-
-        if (!matchedRatio && !allowLeonardoCustomDimension) {
-            return NextResponse.json({
-                error: `Unsupported dimensions ${targetWidth}x${targetHeight} for ${modelConfig.name}. Supported: ${modelConfig.ratios.map((r) => `${r.width}x${r.height}`).join(', ')}`,
-                libId: generationId,
-            }, { status: 400 });
+        if (!matchedRatio) {
+            // Default to first supported ratio if completely unsupported
+            targetWidth = modelConfig.ratios[0].width;
+            targetHeight = modelConfig.ratios[0].height;
         }
 
         const aspectRatio = matchedRatio?.value || `${targetWidth}x${targetHeight}`;
 
-        // referenceImage is intentionally kept for future image-guidance support.
-        void referenceImage;
+        // Determine generation mode and handle auto-switch for reference image edit
+        let generationMode = GENERATION_MODES.TEXT_TO_IMAGE;
+        let finalSelectedModel = selectedModel;
+        let finalSelectedModelConfig = modelConfig;
+        let finalProvider = selectedProvider;
+        let fallbackReason = null;
+        const requestedMode = requestedGenerationType || (referenceImageBuffer ? GENERATION_MODES.IMAGE_TO_IMAGE : GENERATION_MODES.TEXT_TO_IMAGE);
 
-        // Create a new Appwrite record for each generation within the same conversation libId
+        try {
+            const modeInfo = determineGenerationMode(referenceImageBuffer, selectedModel, selectedProvider);
+            generationMode = modeInfo.mode;
+
+            if (modeInfo.shouldAutoSwitchModel && modeInfo.recommendedModelId) {
+                console.log(`Auto-switching model from ${selectedModel} to ${modeInfo.recommendedModelId} for image-to-image mode.`);
+                finalSelectedModel = modeInfo.recommendedModelId;
+                finalSelectedModelConfig = getModelById(finalSelectedModel);
+                finalProvider = finalSelectedModelConfig?.provider || 'huggingface';
+            }
+        } catch (modeError) {
+            return NextResponse.json({
+                error: 'Cannot determine generation mode',
+                details: modeError.message,
+            }, { status: 400 });
+        }
+
+        // Image-to-image is only supported on Hugging Face models
+        if (generationMode === GENERATION_MODES.IMAGE_TO_IMAGE && finalProvider !== 'huggingface') {
+            const hfEditModel = getDefaultImageToImageModelForProvider('huggingface');
+            if (!hfEditModel) {
+                return NextResponse.json({
+                    error: 'Image-to-image unavailable',
+                    details: 'No Hugging Face image-to-image model is configured.',
+                    libId: generationId,
+                }, { status: 400 });
+            }
+
+            console.log(`Auto-routing image-to-image request from provider ${finalProvider} to Hugging Face model ${hfEditModel.id}.`);
+            finalSelectedModel = hfEditModel.id;
+            finalSelectedModelConfig = hfEditModel;
+            finalProvider = 'huggingface';
+        }
+
+        const enhancedPrompt = enhancePromptForQuality(prompt, {
+            aspectRatio,
+            generationMode,
+        });
+
+        // Create initial Appwrite record
         try {
             const insertDoc = await databases.createDocument(DB_ID, IMAGE_GENERATION_COLLECTION_ID, ID.unique(), {
                 libId: generationId,
                 prompt,
                 userEmail,
-                model: selectedModel,
+                model: finalSelectedModel,
                 width: targetWidth,
                 height: targetHeight,
                 status: 'generating',
@@ -547,19 +440,31 @@ export async function POST(request) {
         } catch (dbError) {
             console.error('Database error:', dbError);
             return NextResponse.json({
-                error: 'Failed to create/update image generation record',
+                error: 'Failed to create image generation record',
                 details: dbError.message,
             }, { status: 500 });
         }
 
-        let imageBuffer;
-        if (selectedProvider === 'leonardo') {
-            imageBuffer = await generateLeonardoImage(prompt, selectedModel, targetWidth, targetHeight);
-        } else {
-            imageBuffer = await generateHFImage(prompt, selectedModel, targetWidth, targetHeight);
+        // Execute generation via image provider adapter
+        const generationResult = await generateImage({
+            prompt: enhancedPrompt,
+            provider: finalProvider,
+            model: finalSelectedModel,
+            width: targetWidth,
+            height: targetHeight,
+            aspectRatio,
+            referenceImageBuffer,
+            processingMode,
+        });
+
+        const imageBuffer = generationResult.buffer;
+        finalProvider = generationResult.provider;
+        finalSelectedModel = generationResult.model;
+        if (generationResult.metadata?.fallbackOccurred) {
+            fallbackReason = generationResult.metadata.fallbackReason;
         }
 
-        // Convert to PNG (handles any format provider might return)
+        // Convert to PNG via Sharp
         let processedImageBuffer;
         try {
             processedImageBuffer = await sharp(imageBuffer).png().toBuffer();
@@ -569,13 +474,12 @@ export async function POST(request) {
         }
 
         // Upload to Appwrite Storage
-        const safeName = selectedModel.replace(/[^a-zA-Z0-9]/g, '_');
-        const fileName = `${selectedProvider}_${safeName}_${generationId}_${targetWidth}x${targetHeight}_${Date.now()}.png`;
+        const safeName = finalSelectedModel.replace(/[^a-zA-Z0-9]/g, '_');
+        const fileName = `${finalProvider}_${safeName}_${generationId}_${targetWidth}x${targetHeight}_${Date.now()}.png`;
         const uploadFile = createAppwriteFile(processedImageBuffer, fileName, 'image/png');
 
         let uploaded;
         try {
-            // Permission.read(Role.any()) makes the file publicly readable in the browser
             uploaded = await storage.createFile(BUCKET_ID, ID.unique(), uploadFile, [
                 Permission.read(Role.any()),
             ]);
@@ -590,7 +494,6 @@ export async function POST(request) {
         }
 
         const fileId = uploaded.$id;
-        // Store user-facing URL (never admin-mode) and return a proxy display URL for clients.
         const publicUrl = getPublicFileUrl(fileId);
 
         // Mark record as completed
@@ -602,23 +505,36 @@ export async function POST(request) {
                 status: 'completed',
             });
         } catch (updateErr) {
-            // Log but don't fail - image is already saved in storage
             console.error('Failed to mark generation as completed in DB:', updateErr);
         }
+
+        const providerDisplayName =
+            finalProvider === 'cloudflare'
+                ? 'Cloudflare Workers AI'
+                : finalProvider === 'modelscope'
+                ? 'ModelScope'
+                : 'Hugging Face';
 
         return NextResponse.json({
             success: true,
             imageUrl: publicUrl,
             displayUrl: getProxyFileUrl(fileId, userEmail, generationId),
             libId: generationId,
-            model: selectedModel,
-            modelName: modelConfig.name,
+            model: finalSelectedModel,
+            modelName: finalSelectedModelConfig?.name || finalSelectedModel,
             prompt,
             aspectRatio,
-            provider: selectedProvider,
+            provider: finalProvider,
             dimensions: aspectRatio,
+            requestedGenerationType: requestedMode,
+            generationType: generationResult.generationType,
+            hasReferenceImage: Boolean(referenceImageBuffer),
+            modelWasSwitched: finalSelectedModel !== selectedModel,
+            fallbackReason,
             generation: completedDoc,
-            message: `Image generated successfully with ${modelConfig.name} via ${selectedProvider === 'leonardo' ? 'Leonardo AI' : 'Hugging Face'}`,
+            message: `Image generated successfully with ${finalSelectedModelConfig?.name || finalSelectedModel} via ${providerDisplayName}${
+                fallbackReason ? ` (fallback: ${fallbackReason})` : ''
+            }${finalSelectedModel !== selectedModel ? ' (model switched for edit mode)' : ''}`,
         });
     } catch (error) {
         console.error('Image generation error:', error);
@@ -632,16 +548,20 @@ export async function POST(request) {
         let statusCode = 500;
         let errorMessage = error.message;
 
-        if (error.message.includes('API key') || error.message.includes('configured') || error.message.includes('authentication')) {
+        if (error instanceof ProviderAuthError || error.message.includes('API key') || error.message.includes('authentication')) {
             statusCode = 401;
-        } else if (error.message.includes('loading') || error.message.includes('unavailable') || error.message.includes('timed out')) {
-            statusCode = 503;
-        } else if (error.message.includes('429') || error.message.includes('rate limit') || error.message.includes('Rate limit')) {
+            errorMessage = 'Image provider authentication failed. Please check provider credentials.';
+        } else if (error instanceof ProviderQuotaError || error instanceof ProviderRateLimitError || error.message.includes('429')) {
             statusCode = 429;
-            errorMessage = 'Rate limit reached. Please wait a moment and try again.';
-        } else if (error.message.includes('NSFW') || error.message.includes('content policy') || error.message.includes('safety')) {
+            errorMessage = 'Daily quota or rate limit reached for the image provider. Please try again later.';
+        } else if (error instanceof ProviderContentPolicyError || error.message.includes('content policy') || error.message.includes('NSFW')) {
             statusCode = 400;
-            errorMessage = 'The prompt may violate content policy. Please modify your prompt and try again.';
+            errorMessage = 'The prompt may violate image generation content policies. Please modify your prompt and try again.';
+        } else if (error instanceof ProviderBadRequestError) {
+            statusCode = 400;
+        } else if (error instanceof ProviderTimeoutError || error instanceof ProviderUnavailableError || error.message.includes('503')) {
+            statusCode = 503;
+            errorMessage = 'Image generation service is temporarily unavailable. Please retry shortly.';
         }
 
         return NextResponse.json({
@@ -651,4 +571,4 @@ export async function POST(request) {
             libId: generationId,
         }, { status: statusCode });
     }
-}
+}, { requireVerified: false });

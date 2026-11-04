@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { databases, DB_ID, Query } from '@/services/appwrite-admin';
+import { withUser } from '@/lib/request-context';
 import {
   USERS_COLLECTION_ID,
   BUG_REPORTS_COLLECTION_ID,
@@ -7,10 +8,15 @@ import {
   USAGE_LOGS_COLLECTION_ID
 } from '@/services/appwrite-collections';
 
-export async function DELETE(request) {
+// SECURITY: this handler irreversibly cascade-deletes a user's data. Identity is now
+// taken from the verified Firebase token (ctx.assertEmail), never from the request body,
+// so a caller can only ever delete their *own* account.
+export const DELETE = withUser(async function DELETE(request, ctx) {
   try {
-    const body = await request.json();
-    const { email, confirmation } = body;
+    const body = await request.json().catch(() => ({}));
+    // Authoritative identity. If the client sends an email it must match the session;
+    // if it sends none we fall back to the authenticated user.
+    const email = ctx.assertEmail(body.email);
 
     // Validate request
     if (!email) {
@@ -101,7 +107,7 @@ export async function DELETE(request) {
 
   } catch (error) {
     console.error('Account deletion request error:', error);
-    
+
     return NextResponse.json(
       {
         error: 'Invalid deletion request',
@@ -110,13 +116,14 @@ export async function DELETE(request) {
       { status: 500 }
     );
   }
-}
+});
 
 // GET endpoint to check account deletion eligibility
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
   try {
     const { searchParams } = new URL(request.url);
-    const email = searchParams.get('email');
+    // Authoritative identity — the eligibility check can only be run for oneself.
+    const email = ctx.assertEmail(searchParams.get('email'));
 
     if (!email) {
       return NextResponse.json(
@@ -188,7 +195,7 @@ export async function GET(request) {
 
   } catch (error) {
     console.error('Account deletion check error:', error);
-    
+
     return NextResponse.json(
       {
         error: 'Failed to check deletion eligibility',
@@ -197,4 +204,4 @@ export async function GET(request) {
       { status: 500 }
     );
   }
-}
+});

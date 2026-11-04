@@ -1,9 +1,11 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { X, Coins, Loader2, Check } from 'lucide-react'
+import { X, Coins, Loader2, Check } from '@/components/ui/animated-icon'
 import { toast } from '@/lib/alert'
 import { useAuth } from '@/contexts/AuthContext'
+import { ensureRazorpayScript } from '@/lib/razorpay-loader'
+import { authFetch } from '@/lib/auth-fetch'
 
 const FALLBACK_PACKAGES = [
     { id: 'default_10', credits: 10, priceInr: 49, displayName: '10 Credits' },
@@ -21,10 +23,20 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
     const [loading, setLoading] = useState(true)
     const [selectedPackage, setSelectedPackage] = useState(null)
     const [purchasing, setPurchasing] = useState(false)
+    const [gatewayReady, setGatewayReady] = useState(false)
+    const [gatewayError, setGatewayError] = useState(null)
 
     // Fetch available packages
     useEffect(() => {
         if (isOpen) {
+            setGatewayError(null)
+            ensureRazorpayScript()
+                .then(() => setGatewayReady(true))
+                .catch(() => {
+                    setGatewayReady(false)
+                    setGatewayError('Failed to load payment gateway. Please refresh and try again.')
+                })
+
             fetchPackages()
         }
     }, [isOpen])
@@ -62,12 +74,22 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
             return
         }
 
+        if (gatewayError) {
+            toast.error(gatewayError)
+            return
+        }
+
         setSelectedPackage(pkg)
         setPurchasing(true)
 
         try{
+            if (!gatewayReady || !window.Razorpay) {
+                await ensureRazorpayScript()
+                setGatewayReady(true)
+            }
+
             // Create Razorpay order
-            const response = await fetch('/api/website-builder/credits/purchase', {
+            const response = await authFetch('/api/website-builder/credits/purchase', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -127,7 +149,7 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
 
     const verifyPayment = async (paymentResponse, packageId) => {
         try {
-            const response = await fetch('/api/website-builder/credits/verify-purchase', {
+            const response = await authFetch('/api/website-builder/credits/verify-purchase', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -197,6 +219,12 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
 
                 {/* Content */}
                 <div className="p-4 sm:p-6">
+                    {gatewayError && (
+                        <div className="mb-4 p-3 rounded-lg border border-red-500/40 bg-red-500/10 text-red-300 text-sm">
+                            {gatewayError}
+                        </div>
+                    )}
+
                     {loading ? (
                         <div className="flex items-center justify-center py-12">
                             <Loader2 className="size-8 animate-spin text-indigo-500" />
@@ -230,13 +258,15 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
                                         </div>
 
                                         <button
-                                            disabled={purchasing}
+                                            disabled={purchasing || !gatewayReady}
                                             className={`w-full py-2.5 rounded-lg font-medium transition-all ${
                                                 purchasing && selectedPackage?.id === pkg.id
                                                     ? 'bg-indigo-600 text-white cursor-not-allowed'
                                                     : selectedPackage?.id === pkg.id
                                                     ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                                                    : 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                    : gatewayReady
+                                                    ? 'bg-gray-700 hover:bg-gray-600 text-white'
+                                                    : 'bg-gray-700/70 text-gray-400 cursor-not-allowed'
                                             }`}
                                         >
                                             {purchasing && selectedPackage?.id === pkg.id ? (
@@ -244,6 +274,8 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
                                                     <Loader2 className="size-4 animate-spin" />
                                                     Processing...
                                                 </span>
+                                            ) : !gatewayReady ? (
+                                                'Loading Payment...'
                                             ) : (
                                                 'Buy Now'
                                             )}
@@ -271,8 +303,6 @@ export default function CreditPurchaseModal({ isOpen, onClose, onSuccess }) {
                 </div>
             </div>
 
-            {/* Load Razorpay script */}
-            <script src="https://checkout.razorpay.com/v1/checkout.js" async></script>
         </div>
     )
 }

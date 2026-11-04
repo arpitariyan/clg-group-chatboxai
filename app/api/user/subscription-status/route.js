@@ -2,16 +2,23 @@ import { NextResponse } from 'next/server';
 import { databases, DB_ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { checkUserPlan, getSubscriptionDetails, getSubscriptionStatusMessage } from '@/lib/planUtils-server';
+import { getCanonicalUserByEmail } from '@/lib/user-subscription-server';
+import { withUser } from '@/lib/request-context';
 
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
   try {
     const { searchParams } = new URL(request.url);
-    const email = searchParams.get('email');
     const action = searchParams.get('action') || 'status';
 
     if (action === 'overview') {
+      // System-wide stats and other users' records — admin only.
+      if (!ctx.isAdmin) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
       return await getSystemOverview();
     }
+
+    const email = ctx.assertEmail(searchParams.get('email'));
 
     if (!email) {
       return NextResponse.json(
@@ -27,18 +34,10 @@ export async function GET(request) {
       getSubscriptionStatusMessage(email)
     ]);
 
-    // Get user data from database
-    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', email),
-      Query.limit(1)
-    ]);
-    const user = userRes.documents[0];
+    const { user } = await getCanonicalUserByEmail({ email, createIfMissing: false });
 
     if (!user) {
-      return NextResponse.json(
-        { error: `User not found` },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
     // Calculate additional info
@@ -47,12 +46,31 @@ export async function GET(request) {
     const daysRemaining = hasSubscriptionDates ? 
       Math.ceil((new Date(user.subscription_end_date) - now) / (1000 * 60 * 60 * 24)) : null;
 
+    // Determine isActive reliably:
+    // - If user has plan='pro'|'max' with no subscription dates → treat as permanently active (manual upgrade)
+    // - If user has subscription dates → check if end date is in the future
+    // - Never block a user whose plan field says pro/max unless the date has explicitly passed
+    const planFromDb = String(user.plan || 'free').toLowerCase();
+    const isPaidPlan = planFromDb === 'pro' || planFromDb === 'max';
+    let isActive = false;
+    if (hasSubscriptionDates) {
+      isActive = new Date(user.subscription_end_date) > now && isPaidPlan;
+    } else if (subscriptionDetails?.hasSubscription && subscriptionDetails?.isActive) {
+      isActive = true;
+    }
+
+    // Credit values — always return from DB
+    const credits = Number(user.credits ?? 0);
+    const paid_credits = Number(user.paid_credits ?? 0);
+
     const response = {
       user: {
         email: user.email,
         name: user.name,
         currentPlan: user.plan,
-        credits: user.credits,
+        credits,
+        paid_credits,
+        hasPaidCredits: paid_credits > 0,
         lastMonthlyReset: user.last_monthly_reset
       },
       subscription: {
@@ -60,11 +78,12 @@ export async function GET(request) {
         startDate: user.subscription_start_date,
         endDate: user.subscription_end_date,
         daysRemaining,
-        isActive: subscriptionDetails.isActive,
+        isActive,
         statusMessage
       },
       planCheck: {
         isPro: planInfo.isPro,
+        isMax: planInfo.isMax,
         effectivePlan: planInfo.plan,
         isExpired: planInfo.isExpired,
         expiresAt: planInfo.expiresAt
@@ -88,7 +107,7 @@ export async function GET(request) {
       { status: 500 }
     );
   }
-}
+});
 
 async function getSystemOverview() {
   try {

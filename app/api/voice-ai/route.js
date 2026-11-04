@@ -1,15 +1,17 @@
 import { NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { detectEmotion, generateEmotionalPrompt, getEmotionalVoiceParams, generateEmotionalSSMLText, analyzeSentenceEmotions } from '@/lib/emotionUtils';
+import { buildConversationMemoryContext } from '@/lib/memory-context';
+import { resolveRequestUser } from '@/lib/server-auth';
 
 // Helper function to get Gemini API keys with failover support
 function getGeminiApiKeys() {
   const keys = [
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY,
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY_2,
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY_3,
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY_4,
-    process.env.NEXT_PUBLIC_GEMINI_API_KEY_5
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GEMINI_API_KEY_4,
+    process.env.GEMINI_API_KEY_5
   ].filter(key => key && key.trim() !== '');
 
   return keys;
@@ -153,7 +155,18 @@ function detectLanguage(text) {
 
 export async function POST(req) {
   try {
-    const { query, language, conversationHistory = [] } = await req.json();
+    const { query, language, conversationHistory = [], memoryEnabled = true } = await req.json();
+
+    // Optional auth: derive the user from the verified token ONLY — never trust a
+    // client-supplied email. Anonymous callers keep the feature (no memory injection);
+    // no one can load another user's stored memories by sending their address.
+    let userEmail = null;
+    try {
+      const authedUser = await resolveRequestUser(req, false);
+      userEmail = authedUser?.email || null;
+    } catch (_) {
+      userEmail = null;
+    }
 
     if (!query || !query.trim()) {
       return NextResponse.json(
@@ -182,11 +195,21 @@ export async function POST(req) {
       ).join('\n') + '\n\n'
       : '';
 
+    const memoryContextData = await buildConversationMemoryContext({
+      userEmail,
+      query,
+      conversationHistory,
+      memoryEnabled,
+      limit: 4,
+      recentTurns: 5,
+    });
+    const memoryContext = memoryContextData.memoryContext || memoryContextData.recentConversationContext || '';
+
     // Detect emotion from user query to generate emotionally intelligent responses
     const { emotion, intensity } = detectEmotion(query);
 
     // Create a prompt for voice conversation - short and natural responses with emotional context
-    let voicePrompt = `${conversationContext}User asks: "${query}"
+    let voicePrompt = `${memoryContext ? `${memoryContext}\n\n` : ''}${conversationContext}User asks: "${query}"
 
 Please provide a short, clear, and natural voice response (2-4 sentences maximum). 
 - Sound like you're having a real conversation

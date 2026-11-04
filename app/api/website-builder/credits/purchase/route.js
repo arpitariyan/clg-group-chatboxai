@@ -6,12 +6,17 @@ import {
     getDefaultWebsitePackageById,
     normalizeWebsiteCreditPackage,
 } from '@/lib/website-credit-packages';
+import { withUser } from '@/lib/request-context';
+import { createPendingTransaction, attachRazorpayOrderId } from '@/lib/payments/order-service';
+import { PURCHASE_TYPES } from '@/lib/payments/payment-config';
+
+export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/website-builder/credits/purchase
- * Creates a Razorpay order for purchasing credits
+ * Creates a Razorpay order for purchasing Website Builder credits
  */
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
         if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
             console.error('Razorpay credentials not configured');
@@ -26,7 +31,9 @@ export async function POST(request) {
             key_secret: process.env.RAZORPAY_KEY_SECRET,
         });
 
-        const { packageId, email } = await request.json();
+        const body = await request.json();
+        const { packageId } = body;
+        const email = ctx.assertEmail(body.email);
 
         if (!packageId || !email) {
             return NextResponse.json(
@@ -56,20 +63,42 @@ export async function POST(request) {
             );
         }
 
+        const amountMinorUnits = packageData.priceInr * 100;
+
+        // Create durable internal pending transaction record
+        const pendingTx = await createPendingTransaction({
+            userId: ctx.user?.uid || null,
+            userEmail: email,
+            purchaseType: PURCHASE_TYPES.WEBSITE_BUILDER_CREDITS,
+            packageId: packageData.id,
+            packageCreditCount: packageData.credits,
+            originalAmountMinorUnits: amountMinorUnits,
+            finalAmountMinorUnits: amountMinorUnits,
+            currency: 'INR',
+            metadata: {
+                packageDisplayName: packageData.displayName,
+                credits: packageData.credits,
+            },
+        });
+
         const receipt = `wbc_${Date.now()}`.substring(0, 40);
 
         const order = await razorpay.orders.create({
-            amount: packageData.priceInr * 100,
+            amount: amountMinorUnits,
             currency: 'INR',
             receipt: receipt,
             payment_capture: 1,
             notes: {
-                package_id: packageId,
+                internal_transaction_id: pendingTx.internal_transaction_id,
+                type: 'website_credits',
+                purchase_type: PURCHASE_TYPES.WEBSITE_BUILDER_CREDITS,
+                package_id: packageData.id,
                 credits: packageData.credits,
                 user_email: email,
-                type: 'website_credits'
             }
         });
+
+        await attachRazorpayOrderId(pendingTx.internal_transaction_id, order.id);
 
         return NextResponse.json({
             success: true,
@@ -85,7 +114,8 @@ export async function POST(request) {
                 priceInr: packageData.priceInr,
                 displayName: packageData.displayName
             },
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID,
+            internalTransactionId: pendingTx.internal_transaction_id,
         });
 
     } catch (error) {
@@ -95,4 +125,4 @@ export async function POST(request) {
             { status: 500 }
         );
     }
-}
+});

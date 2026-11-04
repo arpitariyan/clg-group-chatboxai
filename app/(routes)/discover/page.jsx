@@ -1,7 +1,7 @@
 'use client'
 
 import axios from 'axios';
-import { Activity, Cpu, DollarSign, Globe, Star, Volleyball, Palette, Clock, ExternalLink, Calendar, TrendingUp, RotateCw, AlertCircle } from 'lucide-react'
+import { Activity, Cpu, DollarSign, Globe, Star, Volleyball, Palette, Clock, ExternalLink, Calendar, TrendingUp, RotateCw, AlertCircle } from '@/components/ui/animated-icon'
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -306,10 +306,10 @@ function Discover() {
     };
 
     const NewsCard = ({ article }) => (
-        <Card className="group hover:shadow-lg transition-all duration-300 cursor-pointer h-full">
+        <Card className="group hover:shadow-md transition-all duration-300 cursor-pointer h-full border-border/60 bg-card/60 backdrop-blur-xs">
             <CardContent className="p-0">
                 {article.image && (
-                    <div className="relative overflow-hidden rounded-t-lg">
+                    <div className="relative overflow-hidden rounded-t-xl">
                         <img 
                             src={article.image} 
                             alt={article.title}
@@ -372,9 +372,9 @@ function Discover() {
     );
 
     const LoadingCard = () => (
-        <Card className="h-full">
+        <Card className="h-full border-border/60 bg-card/60 backdrop-blur-xs">
             <CardContent className="p-0">
-                <Skeleton className="w-full h-48 rounded-t-lg" />
+                <Skeleton className="w-full h-48 rounded-t-xl" />
                 <div className="p-4 space-y-3">
                     <div className="flex gap-2">
                         <Skeleton className="h-4 w-20" />

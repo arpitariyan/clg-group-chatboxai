@@ -1,421 +1,287 @@
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
 import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
-import { USERS_COLLECTION_ID, SUBSCRIPTIONS_COLLECTION_ID } from '@/services/appwrite-collections';
+import {
+  USERS_COLLECTION_ID,
+  SUBSCRIPTIONS_COLLECTION_ID,
+  WEBHOOK_EVENTS_COLLECTION_ID,
+} from '@/services/appwrite-collections';
+import { getPlanPaidCredits, normalizePlan } from '@/lib/subscriptionPlans';
+import { getDynamicPlanPaidCredits } from '@/lib/dynamicPlanService';
+import { getCanonicalUserByEmail, updateUsersByEmail } from '@/lib/user-subscription-server';
+import { fulfillCouponRedemption } from '@/lib/coupon-service';
+import { verifyWebhookSignature, fetchRazorpayPayment, fetchRazorpayOrder } from '@/lib/payments/razorpay-client';
+import { fulfillPaymentEntitlement } from '@/lib/payments/payment-fulfillment';
+import { getTransactionByRazorpayOrderId } from '@/lib/payments/order-service';
+import { PURCHASE_TYPES } from '@/lib/payments/payment-config';
 
-// Verify Razorpay webhook signature
-const verifySignature = (body, signature) => {
-  const hmac = crypto.createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET);
-  hmac.update(JSON.stringify(body));
-  const generated_signature = hmac.digest('hex');
-  return generated_signature === signature;
-};
+export const dynamic = 'force-dynamic';
 
 export async function POST(request) {
   try {
-    // console.log('=== PAYMENT WEBHOOK REQUEST START ===');
-    // console.log('Request method:', request.method);
-    // console.log('Request URL:', request.url);
-    // console.log('Environment check:');
-    // console.log('  - RAZORPAY_KEY_SECRET:', !!process.env.RAZORPAY_KEY_SECRET);
-    // console.log('  - RAZORPAY_WEBHOOK_SECRET:', !!process.env.RAZORPAY_WEBHOOK_SECRET);
-    // console.log('  - APPWRITE_PROJECT_ID:', !!process.env.APPWRITE_PROJECT_ID);
+    const rawBody = await request.text();
+    const signature = request.headers.get('x-razorpay-signature') || request.headers.get('X-Razorpay-Signature');
 
-    const body = await request.json();
-    // console.log('Request body keys:', Object.keys(body));
-    // console.log('Request body:', JSON.stringify(body, null, 2));
+    // 1. Check for legacy manual verification attempts hitting webhook endpoint
+    if (!signature) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(rawBody);
+      } catch {}
 
-    const signature = request.headers.get('X-Razorpay-Signature');
-    // console.log('Razorpay signature header:', !!signature);
+      if (parsed && parsed.razorpay_order_id && parsed.razorpay_payment_id) {
+        return NextResponse.json(
+          {
+            error: 'Direct client payment verification at webhook endpoint is prohibited.',
+            details: 'Client checkout verification has migrated to authenticated POST /api/razorpay/verify-checkout',
+            success: false,
+          },
+          { status: 400 }
+        );
+      }
 
-    // For manual verification calls (from frontend)
-    if (body.razorpay_order_id && body.razorpay_payment_id && body.razorpay_signature) {
-      // console.log('Processing manual payment verification');
-      const result = await handlePaymentVerification(body);
-      // console.log('=== PAYMENT VERIFICATION COMPLETED ===');
-      return result;
+      return NextResponse.json(
+        { error: 'Missing Razorpay webhook signature header', success: false },
+        { status: 400 }
+      );
     }
 
-    // For webhook calls
-    if (signature) {
-      // console.log('Processing webhook call');
-      const result = await handleWebhook(body, signature);
-      // console.log('=== WEBHOOK PROCESSING COMPLETED ===');
-      return result;
+    // 2. Strict webhook signature verification (fails closed if secret missing or signature invalid)
+    const isValidSignature = verifyWebhookSignature(rawBody, signature);
+    if (!isValidSignature) {
+      console.error('[RazorpayWebhook] Signature verification failed or webhook secret missing.');
+      return NextResponse.json(
+        { error: 'Invalid webhook signature', success: false },
+        { status: 401 }
+      );
     }
 
-    // console.log('Invalid request - missing required data');
-    return NextResponse.json(
-      { error: 'Invalid request - missing payment data or signature', success: false },
-      { status: 400 }
-    );
+    // 3. Parse validated JSON body
+    let body;
+    try {
+      body = JSON.parse(rawBody);
+    } catch (parseError) {
+      return NextResponse.json(
+        { error: 'Malformed JSON payload', details: parseError.message },
+        { status: 400 }
+      );
+    }
 
+        const event = body.event;
+    // SECURITY: Use only the x-razorpay-event-id header for deduplication.
+    // Falling back to payment entity ID or Date.now() creates duplicate-event vulnerabilities.
+    const eventId = request.headers.get('x-razorpay-event-id') || request.headers.get('X-Razorpay-Event-Id');
+    if (!eventId) {
+      console.error('[RazorpayWebhook] Missing x-razorpay-event-id header. Rejecting webhook.');
+      return NextResponse.json(
+        { error: 'Missing x-razorpay-event-id header. Webhook deduplication requires a stable event ID.', success: false },
+        { status: 400 }
+      );
+    }
+    const payload = body.payload;
+
+    // 4. Webhook event deduplication
+    try {
+      const existingEvent = await databases.listDocuments(DB_ID, WEBHOOK_EVENTS_COLLECTION_ID, [
+        Query.equal('event_id', eventId),
+        Query.limit(1),
+      ]);
+      if (existingEvent.documents && existingEvent.documents.length > 0) {
+        console.log(`[RazorpayWebhook] Event ${eventId} (${event}) already processed. Returning idempotent ok.`);
+        return NextResponse.json({ status: 'ok', idempotent: true });
+      }
+    } catch {}
+
+    // Record webhook event receipt — failure returns 500 so Razorpay retries
+    try {
+      await databases.createDocument(DB_ID, WEBHOOK_EVENTS_COLLECTION_ID, ID.unique(), {
+        event_id: eventId,
+        event_type: event,
+        processed_at: new Date().toISOString(),
+      });
+    } catch (recordErr) {
+      console.error('[RazorpayWebhook] CRITICAL: Failed to record webhook event in Appwrite:', recordErr.message);
+      return NextResponse.json(
+        { error: 'Webhook event storage failed. Razorpay should retry.', success: false },
+        { status: 500 }
+      );
+    }
+
+    // 5. Handle supported events
+    switch (event) {
+      case 'payment.captured':
+        await handlePaymentCaptured(payload.payment?.entity);
+        break;
+
+      case 'payment.failed':
+        await handlePaymentFailed(payload.payment?.entity);
+        break;
+
+      case 'subscription.charged':
+        await handleSubscriptionCharged(payload.subscription?.entity, payload.payment?.entity);
+        break;
+
+      case 'subscription.cancelled':
+        await handleSubscriptionCancelled(payload.subscription?.entity);
+        break;
+
+      default:
+        console.log('[RazorpayWebhook] Unhandled event:', event);
+    }
+
+    return NextResponse.json({ status: 'ok' });
   } catch (error) {
-    console.error('=== WEBHOOK PROCESSING ERROR ===');
-    console.error('Error details:', error);
-    console.error('Error stack:', error.stack);
+    console.error('[RazorpayWebhook] Processing error:', error);
     return NextResponse.json(
       {
         error: 'Webhook processing failed',
         details: error.message,
-        success: false
+        success: false,
       },
       { status: 500 }
     );
   }
-}
-
-async function handlePaymentVerification(body) {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_email } = body;
-
-  // console.log('Processing payment verification for:', { razorpay_order_id, razorpay_payment_id, user_email });
-
-  try {
-    // Validate required fields
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !user_email) {
-      return NextResponse.json(
-        { error: 'Missing required payment verification data', success: false },
-        { status: 400 }
-      );
-    }
-
-    // Check if environment variables exist
-    if (!process.env.RAZORPAY_KEY_SECRET) {
-      console.error('RAZORPAY_KEY_SECRET environment variable is not set');
-      return NextResponse.json(
-        { error: 'Payment verification configuration error', success: false },
-        { status: 500 }
-      );
-    }
-
-    // Verify payment signature
-    const generated_signature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
-
-    // console.log('Signature verification:', {
-    //   provided: razorpay_signature,
-    //   generated: generated_signature,
-    //   match: generated_signature === razorpay_signature
-    // });
-
-    if (generated_signature !== razorpay_signature) {
-      return NextResponse.json(
-        { error: 'Payment signature verification failed', success: false },
-        { status: 400 }
-      );
-    }
-
-    // console.log('Payment signature verified successfully');
-
-    // Check if user exists
-    const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', user_email),
-      Query.limit(1)
-    ]);
-    const existingUser = userRes.documents[0];
-
-    if (!existingUser) {
-      console.error('User not found, creating new user with Pro plan');
-
-      // If user doesn't exist, create them with Pro plan
-      // console.log('Creating new user with Pro plan');
-
-      // Calculate subscription dates
-      const subscriptionStartDate = new Date();
-      const subscriptionEndDate = new Date();
-      subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
-
-      // console.log('Setting subscription dates for new user:', {
-      //   start: subscriptionStartDate.toISOString(),
-      //   end: subscriptionEndDate.toISOString()
-      // });
-
-      const newUser = {
-        email: user_email,
-        name: getUserNameFromEmail(user_email),
-        plan: 'pro',
-        credits: 25000,
-        last_monthly_reset: new Date().toISOString().split('T')[0],
-        subscription_start_date: subscriptionStartDate.toISOString(),
-        subscription_end_date: subscriptionEndDate.toISOString(),
-        mfa_enabled: false,
-        accent_color: 'violet',
-        language: 'en'
-      };
-
-      let createdUser;
-      try {
-        createdUser = await databases.createDocument(DB_ID, USERS_COLLECTION_ID, ID.unique(), newUser);
-      } catch (createError) {
-        console.error('Failed to create new user:', createError);
-        return NextResponse.json(
-          { error: `Failed to create user: ${createError.message}`, success: false },
-          { status: 500 }
-        );
-      }
-
-      // console.log('New user created successfully:', { 
-      //   email: user_email, 
-      //   plan: 'pro', 
-      //   credits: 25000,
-      //   subscription_start: subscriptionStartDate.toISOString(),
-      //   subscription_end: subscriptionEndDate.toISOString()
-      // });
-
-      // Store subscription record for new user
-      try {
-        await databases.createDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, ID.unique(), {
-          user_email: user_email,
-          razorpay_order_id: razorpay_order_id,
-          plan_type: 'pro',
-          amount: 29900, // ₹299 in paisa
-          currency: 'INR',
-          status: 'active'
-        });
-      } catch (subscriptionError) {
-        console.error('Failed to store subscription for new user:', subscriptionError);
-      }
-
-      return NextResponse.json({
-        success: true,
-        message: 'Payment verified and Pro plan activated for new user',
-        user: {
-          id: createdUser.$id,
-          email: createdUser.email,
-          plan: createdUser.plan,
-          credits: createdUser.credits
-        }
-      });
-    }
-
-    // console.log('User found:', { id: existingUser.$id, email: existingUser.email, currentPlan: existingUser.plan });
-
-    // Calculate subscription dates
-    const subscriptionStartDate = new Date();
-    const subscriptionEndDate = new Date();
-    subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
-
-    // console.log('Setting subscription dates:', {
-    //   start: subscriptionStartDate.toISOString(),
-    //   end: subscriptionEndDate.toISOString()
-    // });
-
-    // Update existing user to Pro plan with subscription dates
-    let updatedUser;
-    try {
-      updatedUser = await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, existingUser.$id, {
-        plan: 'pro',
-        credits: 25000,
-        last_monthly_reset: new Date().toISOString().split('T')[0],
-        subscription_start_date: subscriptionStartDate.toISOString(),
-        subscription_end_date: subscriptionEndDate.toISOString()
-      });
-    } catch (updateError) {
-      console.error('Failed to update user:', updateError);
-      return NextResponse.json(
-        { error: `Failed to update user plan: ${updateError.message}`, success: false },
-        { status: 500 }
-      );
-    }
-
-    // console.log('User updated successfully:', { 
-    //   email: user_email, 
-    //   plan: 'pro', 
-    //   credits: 25000,
-    //   subscription_start: subscriptionStartDate.toISOString(),
-    //   subscription_end: subscriptionEndDate.toISOString()
-    // });
-
-    // Store subscription record
-    try {
-      await databases.createDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, ID.unique(), {
-        user_email: user_email,
-        razorpay_order_id: razorpay_order_id,
-        plan_type: 'pro',
-        amount: 29900, // ₹299 in paisa
-        currency: 'INR',
-        status: 'active'
-      });
-      // console.log('Subscription record created successfully');
-    } catch (subscriptionError) {
-      console.error('Failed to store subscription:', subscriptionError);
-      // Don't fail the payment verification for this
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: 'Payment verified and Pro plan activated',
-      user: {
-        id: updatedUser.$id,
-        email: updatedUser.email,
-        plan: updatedUser.plan,
-        credits: updatedUser.credits
-      }
-    });
-
-  } catch (error) {
-    console.error('Payment verification error:', error);
-    return NextResponse.json(
-      {
-        error: 'Payment verification failed',
-        details: error.message,
-        success: false
-      },
-      { status: 500 }
-    );
-  }
-}
-
-// Helper function to extract name from email
-function getUserNameFromEmail(email) {
-  if (!email) return 'User';
-  const emailName = email.split('@')[0];
-  const cleanName = emailName.replace(/[0-9._-]/g, '');
-  return cleanName.charAt(0).toUpperCase() + cleanName.slice(1).toLowerCase() || 'User';
-}
-
-async function handleWebhook(body, signature) {
-  // Verify webhook signature
-  if (process.env.RAZORPAY_WEBHOOK_SECRET && !verifySignature(body, signature)) {
-    return NextResponse.json(
-      { error: 'Invalid webhook signature' },
-      { status: 401 }
-    );
-  }
-
-  const event = body.event;
-  const payload = body.payload;
-
-  // console.log('Received webhook:', event);
-
-  switch (event) {
-    case 'payment.captured':
-      await handlePaymentCaptured(payload.payment.entity);
-      break;
-
-    case 'payment.failed':
-      await handlePaymentFailed(payload.payment.entity);
-      break;
-
-    case 'subscription.charged':
-      await handleSubscriptionCharged(payload.subscription.entity, payload.payment.entity);
-      break;
-
-    case 'subscription.cancelled':
-      await handleSubscriptionCancelled(payload.subscription.entity);
-      break;
-
-    default:
-    // console.log('Unhandled webhook event:', event);
-  }
-
-  return NextResponse.json({ status: 'ok' });
 }
 
 async function handlePaymentCaptured(payment) {
-  // console.log('Payment captured:', payment.id);
+  if (!payment || !payment.id || !payment.order_id) return;
 
-  // Update subscription status if needed
-  if (payment.order_id) {
-    const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
-      Query.equal('razorpay_order_id', payment.order_id),
-      Query.limit(100)
-    ]);
-    for (const sub of subsRes.documents) {
-      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'active' });
-    }
+  const orderId = payment.order_id;
+  const paymentId = payment.id;
+
+  // Check if already fulfilled
+  const existingSub = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+    Query.equal('razorpay_order_id', orderId),
+    Query.equal('status', 'active'),
+    Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
+
+  if (existingSub.documents && existingSub.documents.length > 0) {
+    return;
   }
+
+  // Fetch actual order to establish authoritative product type & user
+  let order;
+  try {
+    order = await fetchRazorpayOrder(orderId);
+  } catch (err) {
+    console.error('[Webhook] Failed fetching order from Razorpay:', err.message);
+    return;
+  }
+
+  const internalTx = await getTransactionByRazorpayOrderId(orderId);
+  // SECURITY: Appwrite internal transaction is the sole authority for purchase type and user identity.
+  // We do NOT fall back to order.notes (attacker-controlled) or payment.email.
+  if (!internalTx) {
+    console.error('[Webhook] No internal transaction found for order ' + orderId + '. Cannot fulfill without ledger record.');
+    return;
+  }
+
+  if (internalTx._unpersisted === true) {
+    console.error('[Webhook] Internal transaction for order ' + orderId + ' was never durably persisted. Rejecting fulfillment.');
+    return;
+  }
+
+  const actualPurchaseType = internalTx.purchase_type || null;
+  const resolvedPlanType = internalTx.plan_type || null;
+  const resolvedBillingCycle = internalTx.billing_cycle || 'monthly';
+  const boundUserEmail = internalTx.user_email || null;
+
+  if (!actualPurchaseType || !boundUserEmail) {
+    console.error('[Webhook] Internal transaction for order ' + orderId + ' is missing purchase_type or user_email.');
+    return;
+  }
+
+  await fulfillPaymentEntitlement({
+    purchaseType: actualPurchaseType,
+    userEmail: boundUserEmail,
+    order,
+    payment,
+    internalTransaction: internalTx,
+    planType: resolvedPlanType,
+    billingCycle: resolvedBillingCycle,
+  });
 }
 
 async function handlePaymentFailed(payment) {
-  // console.log('Payment failed:', payment.id);
+  if (!payment?.order_id) return;
 
-  // Update subscription status
-  if (payment.order_id) {
-    const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
-      Query.equal('razorpay_order_id', payment.order_id),
-      Query.limit(100)
-    ]);
-    for (const sub of subsRes.documents) {
-      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'failed' });
+  const subsRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+    Query.equal('razorpay_order_id', payment.order_id),
+    Query.limit(10),
+  ]).catch(() => ({ documents: [] }));
+
+  for (const sub of subsRes.documents || []) {
+    if (sub.status !== 'active') {
+      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'failed' }).catch(() => {});
     }
   }
 }
 
 async function handleSubscriptionCharged(subscription, payment) {
-  // console.log('Subscription charged:', subscription.id);
+  if (!subscription?.id) return;
 
-  // Reset monthly credits and extend subscription for recurring payments
-  if (subscription.id) {
-    const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
-      Query.equal('razorpay_subscription_id', subscription.id),
-      Query.limit(1)
-    ]);
-    const subscriptionRecord = subRes.documents[0];
+  const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+    Query.equal('razorpay_subscription_id', subscription.id),
+    Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
 
-    if (subscriptionRecord) {
-      // Calculate new subscription dates for the renewed period
-      const subscriptionStartDate = new Date();
-      const subscriptionEndDate = new Date();
-      subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1); // Add 1 month
+  const subscriptionRecord = subRes.documents?.[0];
+  if (!subscriptionRecord) return;
 
-      // console.log('Extending subscription for user:', subscriptionRecord.user_email, {
-      //   start: subscriptionStartDate.toISOString(),
-      //   end: subscriptionEndDate.toISOString()
-      // });
+  const targetEmail = subscriptionRecord.user_email;
+  const planType = normalizePlan(subscriptionRecord.plan_type || 'pro');
 
-      const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-        Query.equal('email', subscriptionRecord.user_email),
-        Query.limit(1)
-      ]);
-      if (userRes.documents[0]) {
-        await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, userRes.documents[0].$id, {
-          plan: 'pro',
-          credits: 25000,
-          last_monthly_reset: new Date().toISOString().split('T')[0],
-          subscription_start_date: subscriptionStartDate.toISOString(),
-          subscription_end_date: subscriptionEndDate.toISOString()
-        });
-      }
-    }
+  const subscriptionStartDate = new Date();
+  const subscriptionEndDate = new Date();
+  subscriptionEndDate.setMonth(subscriptionEndDate.getMonth() + 1);
+
+  const { user } = await getCanonicalUserByEmail({ email: targetEmail });
+  if (user?.$id) {
+    const currentPaidCredits = Math.max(0, Number(user.paid_credits ?? 0));
+    const dynamicCredits = await getDynamicPlanPaidCredits(planType);
+    const planPaidCredits = dynamicCredits !== undefined && dynamicCredits !== null && !isNaN(dynamicCredits)
+      ? dynamicCredits
+      : getPlanPaidCredits(planType);
+    const rolloverPaidCredits = currentPaidCredits + planPaidCredits;
+
+    await updateUsersByEmail(targetEmail, {
+      plan: planType,
+      credits: user.credits ?? 5000,
+      paid_credits: rolloverPaidCredits,
+      last_monthly_reset: new Date().toISOString().split('T')[0],
+      subscription_start_date: subscriptionStartDate.toISOString(),
+      subscription_end_date: subscriptionEndDate.toISOString(),
+    });
   }
 }
 
 async function handleSubscriptionCancelled(subscription) {
-  // console.log('Subscription cancelled:', subscription.id);
+  if (!subscription?.id) return;
 
-  // Downgrade user to free plan
   const subRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
     Query.equal('razorpay_subscription_id', subscription.id),
-    Query.limit(1)
-  ]);
-  const subscriptionRecord = subRes.documents[0];
+    Query.limit(1),
+  ]).catch(() => ({ documents: [] }));
 
-  if (subscriptionRecord) {
-    // Don't downgrade arpitariyanm@gmail.com
-    if (subscriptionRecord.user_email !== 'arpitariyanm@gmail.com') {
-      const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-        Query.equal('email', subscriptionRecord.user_email),
-        Query.limit(1)
-      ]);
-      if (userRes.documents[0]) {
-        await databases.updateDocument(DB_ID, USERS_COLLECTION_ID, userRes.documents[0].$id, {
-          plan: 'free',
-          credits: 5000,
-          last_monthly_reset: new Date().toISOString().split('T')[0]
-        });
-      }
-    }
+  const subscriptionRecord = subRes.documents?.[0];
+  if (!subscriptionRecord) return;
 
-    // Update subscription status
-    const allSubRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
-      Query.equal('razorpay_subscription_id', subscription.id),
-      Query.limit(100)
-    ]);
-    for (const sub of allSubRes.documents) {
-      await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'cancelled' });
-    }
+  // Downgrade user cleanly upon confirmed cancellation without secret email bypasses
+  const { user } = await getCanonicalUserByEmail({ email: subscriptionRecord.user_email });
+  if (user?.$id) {
+    await updateUsersByEmail(subscriptionRecord.user_email, {
+      plan: 'free',
+      credits: 5000,
+      last_monthly_reset: new Date().toISOString().split('T')[0],
+    });
+  }
+
+  const allSubRes = await databases.listDocuments(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, [
+    Query.equal('razorpay_subscription_id', subscription.id),
+    Query.limit(100),
+  ]).catch(() => ({ documents: [] }));
+
+  for (const sub of allSubRes.documents || []) {
+    await databases.updateDocument(DB_ID, SUBSCRIPTIONS_COLLECTION_ID, sub.$id, { status: 'cancelled' }).catch(() => {});
   }
 }

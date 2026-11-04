@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 
 export async function POST(req) {
+    // SECURITY: Block this test endpoint in production
+    if (process.env.NODE_ENV === 'production') {
+      return new NextResponse(null, { status: 404 });
+    }
+
     try {
         const { prompt, filePaths, libId, conversationHistory } = await req.json();
         

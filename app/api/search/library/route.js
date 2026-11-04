@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { databases, DB_ID, Query } from '@/services/appwrite-admin';
 import { LIBRARY_COLLECTION_ID } from '@/services/appwrite-collections';
+import { AuthError, authErrorResponse, normalizeEmail, resolveRequestUserEmail } from '@/lib/server-auth';
+import { encryptIncognitoData } from '@/lib/crypto-utils';
 
 const normalizeString = (value, fallback = '', maxLength = 200) => {
   const normalized = String(value ?? fallback ?? '').trim();
@@ -40,8 +42,20 @@ const isUnknownAttributeError = (error) => {
 
 export async function POST(request) {
   try {
+    const authenticatedEmail = await resolveRequestUserEmail(request);
     const body = await request.json();
     const { libId, libraryData } = body || {};
+    
+    const isIncognito = libraryData?.isIncognito === true;
+    
+    const requestedEmail = normalizeEmail(libraryData?.userEmail);
+    if (!isIncognito && requestedEmail && requestedEmail !== authenticatedEmail) {
+      return NextResponse.json(
+        { error: 'FORBIDDEN', message: 'Requested user email does not match authenticated session.' },
+        { status: 403 }
+      );
+    }
+
 
     if (!libId) {
       return NextResponse.json({ error: 'libId is required' }, { status: 400 });
@@ -63,8 +77,8 @@ export async function POST(request) {
 
     const payload = {
       created_at: libraryData.created_at || new Date().toISOString(),
-      searchInput: normalizeString(libraryData.searchInput, '', 1000000),
-      userEmail: normalizeString(libraryData.userEmail, 'anonymous', 200),
+      searchInput: isIncognito ? encryptIncognitoData(normalizeString(libraryData.searchInput, '', 1000000)) : normalizeString(libraryData.searchInput, '', 1000000),
+      userEmail: isIncognito ? 'incognito_session' : normalizeString(authenticatedEmail, 'anonymous', 200),
       type: normalizeString(libraryData.type, 'search', 100),
       libId: normalizeString(libId, '', 200),
       selectedModel: normalizeString(libraryData.selectedModel, 'provider-8/gemini-2.0-flash', 200),
@@ -81,7 +95,21 @@ export async function POST(request) {
       payload.processedAt = libraryData.processedAt;
     }
 
-    const created = await databases.createDocument(DB_ID, LIBRARY_COLLECTION_ID, libId, payload);
+    let created;
+    try {
+      created = await databases.createDocument(DB_ID, LIBRARY_COLLECTION_ID, libId, payload);
+    } catch (createError) {
+      // If the schema rejects any field, retry without optional fields that may not exist yet
+      if (isUnknownAttributeError(createError)) {
+        const fallbackPayload = { ...payload };
+        for (const field of FILE_CONTEXT_FIELDS) {
+          delete fallbackPayload[field];
+        }
+        created = await databases.createDocument(DB_ID, LIBRARY_COLLECTION_ID, libId, fallbackPayload);
+      } else {
+        throw createError;
+      }
+    }
 
     return NextResponse.json({
       success: true,
@@ -89,6 +117,9 @@ export async function POST(request) {
       record: { ...created, id: created.$id },
     });
   } catch (error) {
+    if (error instanceof AuthError) {
+      return authErrorResponse(error, 'Authentication is required to create library records.');
+    }
     return NextResponse.json(
       {
         success: false,
@@ -102,6 +133,7 @@ export async function POST(request) {
 
 export async function PATCH(request) {
   try {
+    const authenticatedEmail = await resolveRequestUserEmail(request);
     const body = await request.json();
     const { libId, updateData } = body || {};
 
@@ -124,6 +156,15 @@ export async function PATCH(request) {
       return NextResponse.json({ success: false, error: 'Library record not found' }, { status: 404 });
     }
 
+    const isIncognito = existingDoc.userEmail === 'incognito_session';
+
+    if (!isIncognito && normalizeEmail(existingDoc.userEmail) !== authenticatedEmail) {
+      return NextResponse.json(
+        { success: false, error: 'FORBIDDEN', message: 'You do not have access to this library.' },
+        { status: 403 }
+      );
+    }
+
     const payload = {};
 
     for (const [key, value] of Object.entries(updateData)) {
@@ -133,7 +174,7 @@ export async function PATCH(request) {
     }
 
     if (payload.searchInput !== undefined) {
-      payload.searchInput = normalizeString(payload.searchInput, '', 1000000);
+      payload.searchInput = isIncognito ? encryptIncognitoData(normalizeString(payload.searchInput, '', 1000000)) : normalizeString(payload.searchInput, '', 1000000);
     }
 
     if (payload.type !== undefined) {
@@ -191,6 +232,9 @@ export async function PATCH(request) {
       record: { ...updated, id: updated.$id },
     });
   } catch (error) {
+    if (error instanceof AuthError) {
+      return authErrorResponse(error, 'Authentication is required to update library records.');
+    }
     console.error('Library PATCH error:', {
       message: error?.message,
       code: error?.code,

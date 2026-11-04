@@ -1,0 +1,43 @@
+/* Multi-layer Atmosphere Glow & Orb Container Styles */
+.state-circle-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  position: relative;
+}
+
+.particles-orb-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+  border-radius: 50%;
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  cursor: pointer;
+}
+
+/* Background glow layers removed as requested to keep background clean & crisp */
+.orb-atmosphere-glow,
+.orb-emerald-halo,
+.orb-cyan-bloom {
+  display: none !important;
+}
+
+.particles-orb-container.state-disabled {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+@media (max-width: 640px) {
+  .particles-orb-container {
+    width: 240px !important;
+    height: 240px !important;
+  }
+  .particles-orb-canvas {
+    width: 240px !important;
+    height: 240px !important;
+  }
+}

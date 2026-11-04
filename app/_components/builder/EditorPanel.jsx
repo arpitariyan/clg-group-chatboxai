@@ -1,10 +1,11 @@
 'use client'
 
-import { X, ChevronDown, ChevronUp, Search, Upload, Wand2, Crop, Edit2, Scissors, Loader2, Image as ImageIcon, Trash2 } from 'lucide-react'
+import { X, ChevronDown, ChevronUp, Search, Upload, Wand2, Crop, Edit2, Scissors, Loader2, Image as ImageIcon, Trash2 } from '@/components/ui/animated-icon'
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import ImageCropModal from './ImageCropModal'
 import ImageEditModal from './ImageEditModal'
 import BackgroundRemovalModal from './BackgroundRemovalModal'
+import { authFetch } from '@/lib/auth-fetch'
 
 // Debounce hook
 function useDebounce(callback, delay) {
@@ -237,7 +238,7 @@ export default function EditorPanel({ selectedElement, onUpdate, onClose }) {
             formData.append('file', file)
             formData.append('projectId', 'temp') // You can pass actual projectId if available
             
-            const response = await fetch('/api/website-builder/upload-image', {
+            const response = await authFetch('/api/website-builder/upload-image', {
                 method: 'POST',
                 body: formData
             })
@@ -277,7 +278,7 @@ export default function EditorPanel({ selectedElement, onUpdate, onClose }) {
         try {
             setIsGenerating(true)
             
-            const response = await fetch('/api/website-builder/generate-image', {
+            const response = await authFetch('/api/website-builder/generate-image', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react'
-import { AlertTriangle, Coins, Clock, Crown } from 'lucide-react'
+import { AlertTriangle, Coins, Clock, Crown } from '@/components/ui/animated-icon'
 import { formatTimeUntilReset } from '@/lib/creditUtils'
 
 /**
@@ -89,13 +89,13 @@ export default function CreditInsufficientModal({
                             </div>
                         </div>
 
-                        {/* Upgrade to Pro (if free user) */}
+                        {/* Upgrade plan (if free user) */}
                         {!isPro && (
                             <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4">
                                 <div className="flex items-start gap-3">
                                     <Crown className="size-5 text-purple-400 mt-0.5 shrink-0" />
                                     <div>
-                                        <h3 className="font-medium text-purple-400 mb-1">Upgrade to Pro</h3>
+                                        <h3 className="font-medium text-purple-400 mb-1">Upgrade your plan</h3>
                                         <p className="text-sm text-gray-400">
                                             Get 100 weekly credits (10x more) and unlock all features
                                         </p>

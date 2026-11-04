@@ -3,6 +3,11 @@ import { NextResponse } from 'next/server';
 import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, USAGE_LOGS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { checkResearchLimit } from '@/lib/planUtils-server';
+import { normalizePlan } from '@/lib/subscriptionPlans';
+import { buildConversationMemoryContext } from '@/lib/memory-context';
+import { AuthError, authErrorResponse, normalizeEmail, resolveRequestUserEmail } from '@/lib/server-auth';
+import { needsSearch } from '@/lib/search-utils';
+import { GoogleGenAI } from '@google/genai';
 
 const STOP_WORDS = new Set([
     'the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'on', 'for', 'with', 'by', 'is', 'are', 'was',
@@ -189,6 +194,63 @@ function generateResearchQueries(mainPrompt) {
     };
 }
 
+// Generate research queries using an LLM to analyze intent
+async function analyzeIntentWithLLM(mainPrompt) {
+    try {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+            console.warn("GEMINI_API_KEY not found, falling back to heuristics");
+            return generateResearchQueries(mainPrompt);
+        }
+        
+        const ai = new GoogleGenAI({ apiKey: apiKey });
+        const prompt = `You are an expert research analyst. Analyze the following user request and determine the user's actual intent, key objectives, and the best approach to answer it.
+Then, generate a list of the 4-6 most effective search queries to gather the necessary information.
+
+User Request: "${mainPrompt}"
+
+Respond ONLY with a valid JSON object matching this schema:
+{
+  "intentAnalysis": "Your detailed reasoning about what the user actually needs and the best approach.",
+  "queries": ["query 1", "query 2", "query 3"]
+}`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+                responseMimeType: "application/json",
+            }
+        });
+        
+        const text = response.text;
+        const data = JSON.parse(text);
+        
+        // Map to existing structure expected by the rest of the file
+        const queryAnalysis = {
+             intent: 'inform', 
+             depth: 'deep',
+             domain: 'general',
+             intentAnalysis: data.intentAnalysis
+        };
+        const rankedPlan = data.queries.map((q, idx) => ({ 
+            query: q, 
+            angle: 'llm', 
+            priority: 1 - (idx * 0.05), 
+            index: idx + 1 
+        }));
+        
+        return {
+            queryAnalysis,
+            rankedPlan,
+            queries: data.queries
+        };
+    } catch (err) {
+        console.error("LLM Intent Analysis failed, falling back to heuristics:", err);
+        return generateResearchQueries(mainPrompt);
+    }
+}
+
 // Deduplicate sources by URL
 function deduplicateSources(sources) {
     const seen = new Set();
@@ -267,6 +329,25 @@ function createFollowUpSuggestions(queryAnalysis, originalQuery) {
     return defaults;
 }
 
+function getInternalResearchBudgetFactor(plan = 'free', queryAnalysis = {}) {
+    const normalizedPlan = normalizePlan(plan);
+    const planFactor = normalizedPlan === 'max' ? 1 : 0.5;
+
+    const intentFactor = queryAnalysis.intent === 'compare' || queryAnalysis.intent === 'decision'
+        ? 1.1
+        : queryAnalysis.intent === 'build'
+            ? 1.15
+            : 1;
+
+    const depthFactor = queryAnalysis.depth === 'deep'
+        ? 1.1
+        : queryAnalysis.depth === 'quick'
+            ? 0.9
+            : 1;
+
+    return Math.max(0.45, Math.min(1, planFactor * intentFactor * depthFactor));
+}
+
 // Fetch and extract page content (best effort, lightweight)
 async function fetchPageContent(url) {
     try {
@@ -329,122 +410,35 @@ function heuristicSummary(text) {
 }
 
 // Create a comprehensive research prompt for AI synthesis
-function createResearchSynthesisPrompt(originalQuery, sources) {
-    const sourcesText = sources.map((s, idx) =>
-        `[${idx + 1}] ${s.title}\n   URL: ${s.url}\n   Summary: ${s.summary || s.description}${s.keyPoints ? '\n   Key Points: ' + s.keyPoints.join('; ') : ''}${s.contentExcerpt ? '\n   Excerpt: ' + s.contentExcerpt : ''}`
-    ).join('\n\n');
 
-    return `You are an expert research analyst with deep knowledge across multiple domains. Your task is to synthesize comprehensive, high-quality research based on the provided sources.
-
-RESEARCH TOPIC: "${originalQuery}"
-
-AVAILABLE SOURCES (${sources.length} sources with summaries and key points):
-${sourcesText}
-
-COMPREHENSIVE RESEARCH REQUIREMENTS:
-
-1. EXECUTIVE SUMMARY & OVERVIEW (3-4 paragraphs)
-   - Provide a detailed, comprehensive overview of the topic
-   - Explain the significance and relevance of the topic
-   - Highlight the 3-5 most critical findings upfront
-   - State key conclusions and implications clearly
-   - Include context about why this matters
-
-2. DETAILED ANALYSIS WITH MULTIPLE SECTIONS
-   - Identify and create 4-6 major topic sections based on the research
-   - For each section:
-     * Provide in-depth, detailed explanation
-     * Include relevant data, statistics, research findings, and examples
-     * Reference specific sources using [1], [2], etc.
-     * Compare different viewpoints and perspectives
-     * Explain the "why" behind findings, not just the "what"
-     * Address controversies or debates with balanced perspective
-   - Ensure logical flow and clear connections between sections
-
-3. KEY FINDINGS & INSIGHTS (Detailed bullet points)
-   - List 8-12 major findings of critical importance
-   - Highlight surprising, counterintuitive, or novel information
-   - Include specific data points, statistics, and percentages where available
-   - Note conflicting information from different sources
-   - Identify gaps in current knowledge and research areas needing attention
-   - Flag areas of consensus vs. debate
-
-4. ANALYSIS OF DIFFERENT PERSPECTIVES & VIEWPOINTS
-   - Identify different schools of thought or approaches
-   - Explain each perspective with supporting evidence
-   - Compare strengths and weaknesses of each viewpoint
-   - Identify which perspective has stronger evidence/support
-   - Note any emerging consensus or shifting opinions
-
-5. PRACTICAL IMPLICATIONS & REAL-WORLD APPLICATIONS
-   - Explain specific, actionable implications
-   - Provide examples of real-world applications or use cases
-   - Discuss benefits, challenges, and considerations for implementation
-   - Identify who should care about this and why
-   - Include relevant case studies or practical examples from sources
-
-6. TRENDS, PATTERNS & FUTURE OUTLOOK
-   - Identify current trends and patterns in the research
-   - Discuss emerging developments and innovations
-   - Predict future evolution or changes based on current trajectory
-   - Note areas that are rapidly evolving vs. stable
-   - Identify research opportunities and future directions
-
-7. LIMITATIONS, UNCERTAINTIES & RESEARCH GAPS
-   - Acknowledge limitations in current research
-   - Note data gaps or areas with insufficient information
-   - Discuss reliability and potential biases in sources
-   - Distinguish between well-established facts and areas of uncertainty
-   - Recommend areas needing further research or investigation
-
-8. COMPREHENSIVE CITATIONS & SOURCE ATTRIBUTION
-   - Reference sources using [1], [2], etc. throughout response
-   - Ensure ALL major claims and statistics are backed by source citations
-   - Note when sources agree or disagree on findings
-   - Indicate if sources appear outdated or current
-   - Highlight if any sources have known biases
-
-9. QUALITY & PRESENTATION STANDARDS
-   - Provide an objective, balanced, and well-reasoned analysis
-   - Use clear, professional language suitable for educated readers
-   - Organize with clear headings (use ## for main sections, ### for subsections)
-   - Use bold for key terms and important concepts
-   - Use bullet points and numbered lists for clarity and readability
-   - Maintain academic rigor while remaining accessible
-    - Length: Aim for a comprehensive 1800-2800 word response
-
-10. EVIDENCE RIGOR
-    - Every major section must include source citations like [1], [2]
-    - Avoid unsupported claims; if evidence is weak, explicitly state uncertainty
-    - Distinguish facts, interpretations, and projections
-
-11. CONSENSUS VS CONTRADICTIONS
-    - Add a section: "Consensus and Contradictions"
-    - Clearly list where sources agree and where they conflict
-    - For each major conclusion, include confidence labels: High / Medium / Low
-    - Confidence should be based on source quality, recency, and agreement breadth
-
-CRITICAL INSTRUCTIONS:
-- Make the research DETAILED and COMPREHENSIVE, not brief
-- Include specific numbers, statistics, and data points where available
-- Provide context and explanation for all findings
-- Connect different pieces of information to show relationships
-- Ensure proper source attribution with [1], [2] citations
-- Be thorough and exhaustive in covering the topic
-- Aim for depth and comprehensiveness over brevity`;
-}
 
 export async function POST(request) {
     try {
         const requestStartAt = Date.now();
         const body = await request.json();
+        let authenticatedEmail = null;
+        try {
+            authenticatedEmail = await resolveRequestUserEmail(request);
+        } catch {
+            authenticatedEmail = null;
+        }
         const {
             searchInput,
             selectedModel = 'best',
             maxSources = 20,
             includeDiversity = true,
-            user_email
+            user_email,
+            conversationHistory = [],
+            memoryEnabled = true
         } = body;
+
+        const requestedEmail = normalizeEmail(user_email);
+        if (requestedEmail && authenticatedEmail && requestedEmail !== authenticatedEmail) {
+            return NextResponse.json(
+                { error: 'FORBIDDEN', message: 'Requested user email does not match authenticated session.' },
+                { status: 403 }
+            );
+        }
 
         const normalizedSelectedModel = normalizeSelectedModel(selectedModel);
 
@@ -455,17 +449,10 @@ export async function POST(request) {
             );
         }
 
-        if (!user_email) {
-            return NextResponse.json(
-                { error: 'UNAUTHORIZED', message: 'User email is required for Research' },
-                { status: 401 }
-            );
-        }
-
         // console.log('🔬 Starting deep research for:', searchInput);
 
         // Plan/usage gating for Research feature
-        const researchLimit = await checkResearchLimit(user_email);
+        const researchLimit = await checkResearchLimit(authenticatedEmail);
         if (!researchLimit.canResearch) {
             return NextResponse.json(
                 {
@@ -482,10 +469,12 @@ export async function POST(request) {
             );
         }
 
+        const normalizedPlan = normalizePlan(researchLimit.plan || 'free');
+
         // Log usage for this Research attempt
         try {
             const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-                Query.equal('email', user_email),
+                Query.equal('email', authenticatedEmail),
                 Query.limit(1),
             ]);
             const userDoc = userRes.documents?.[0];
@@ -501,7 +490,7 @@ export async function POST(request) {
                     });
                 } catch (logByIdErr) {
                     await databases.createDocument(DB_ID, USAGE_LOGS_COLLECTION_ID, ID.unique(), {
-                        user_email,
+                        user_email: authenticatedEmail,
                         model: 'research',
                         operation_type: 'research',
                         credits_consumed: 0,
@@ -516,14 +505,16 @@ export async function POST(request) {
         // Step 1: Generate diverse research queries
         const planningStartAt = Date.now();
         const queryPlanData = includeDiversity
-            ? generateResearchQueries(searchInput)
+            ? await analyzeIntentWithLLM(searchInput)
             : {
                 queryAnalysis: detectQueryIntent(searchInput),
                 rankedPlan: [{ query: searchInput, angle: 'core', priority: 1, index: 1 }],
                 queries: [searchInput]
             };
 
-        const queryBatchSize = 7;
+        const internalBudgetFactor = getInternalResearchBudgetFactor(normalizedPlan, queryPlanData.queryAnalysis);
+
+        const queryBatchSize = Math.max(4, Math.round(7 * internalBudgetFactor));
         const selectedPlan = queryPlanData.rankedPlan.slice(0, queryBatchSize);
         const selectedQueries = selectedPlan.map(item => item.query);
         const planningDurationMs = Date.now() - planningStartAt;
@@ -540,16 +531,17 @@ export async function POST(request) {
         const searchPromises = selectedQueries.map(async (query) => {
             try {
                 const response = await axios.post(
-                    `${baseUrl}/api/google-search-api`,
+                    `${baseUrl}/api/deep-search`,
                     {
                         searchInput: query,
-                        searchType: 'search'
+                        searchType: 'search',
+                        isDeepResearch: true
                     },
                     {
                         headers: {
                             'Content-Type': 'application/json',
                         },
-                        timeout: 30000 // 30 second timeout
+                        timeout: 45000 // Increased to 45s for Deep Research
                     }
                 );
 
@@ -571,7 +563,7 @@ export async function POST(request) {
         // Step 3: Deduplicate and format sources
         const rankingStartAt = Date.now();
         const uniqueSources = deduplicateSources(allSources);
-        const normalizedMaxSources = Math.max(8, Math.min(Number(maxSources) || 20, 30));
+        const normalizedMaxSources = Math.max(8, Math.min(Math.ceil((Number(maxSources) || 20) * internalBudgetFactor), internalBudgetFactor < 1 ? 12 : 30));
         const formattedSources = formatSources(uniqueSources, searchInput).slice(0, normalizedMaxSources);
         const rankingDurationMs = Date.now() - rankingStartAt;
 
@@ -613,18 +605,26 @@ export async function POST(request) {
             });
         }
 
-        // Step 4: Create comprehensive research synthesis prompt
-        const researchPrompt = createResearchSynthesisPrompt(searchInput, formattedSources);
+        // Step 4: Fetch and format user memory context (compact summaries only — no raw history)
+        const memoryContextData = await buildConversationMemoryContext({
+            userEmail: authenticatedEmail,
+            query: searchInput,
+            memoryEnabled,
+            limit: internalBudgetFactor < 1 ? 3 : 5,
+        });
+        const memoryContext = memoryContextData.combinedContext || memoryContextData.memoryContext || '';
 
-        // Step 5: Enrich sources with page content & heuristic summaries (limit to first 8 to control cost)
+        // Step 5: (Skipped) Prompt synthesis deferred to Inngest to prevent DB polling issues
+
+        // Step 6: Enrich sources with page content & heuristic summaries (budgeted by plan + query depth)
         // console.log('📄 Fetching page contents for deep enrichment...');
         const enrichmentStartAt = Date.now();
-        const enrichmentTargets = formattedSources.slice(0, 12);
+        const enrichmentTargets = formattedSources.slice(0, internalBudgetFactor < 1 ? 6 : 12);
         await Promise.allSettled(
             enrichmentTargets.map(async (src) => {
                 const content = await fetchPageContent(src.url);
                 const { summary, keyPoints } = heuristicSummary(content);
-                src.contentExcerpt = content.slice(0, 800);
+                src.contentExcerpt = content.slice(0, 400); // Trimmed for TTFT optimization
                 src.summary = summary;
                 src.keyPoints = keyPoints;
                 src.contentLength = content.length;
@@ -632,7 +632,7 @@ export async function POST(request) {
         );
         const enrichmentDurationMs = Date.now() - enrichmentStartAt;
 
-        // Step 6: Do NOT initiate synthesis here.
+        // Step 7: Do NOT initiate synthesis here.
         // Reason: API layer does not yet have the real chat recordId; starting Inngest with
         // a temporary ID causes DB updates to miss the actual chat row and the UI keeps polling.
         // The client starts /api/llm-model after creating the real chat row.
@@ -679,6 +679,9 @@ export async function POST(request) {
         });
 
     } catch (error) {
+        if (error instanceof AuthError) {
+            return authErrorResponse(error, 'Authentication is required for research.');
+        }
         console.error('❌ Research API error:', error);
         console.error('Error details:', {
             message: error.message,
@@ -701,21 +704,24 @@ export async function POST(request) {
 export async function GET(request) {
     try {
         const { searchParams } = new URL(request.url);
-        const user_email = searchParams.get('user_email');
-
-        if (!user_email) {
+        const authenticatedEmail = await resolveRequestUserEmail(request);
+        const requestedEmail = normalizeEmail(searchParams.get('user_email'));
+        if (requestedEmail && requestedEmail !== authenticatedEmail) {
             return NextResponse.json(
-                { error: 'Missing user_email parameter' },
-                { status: 400 }
+                { error: 'FORBIDDEN', message: 'Requested user email does not match authenticated session.' },
+                { status: 403 }
             );
         }
 
-        const status = await checkResearchLimit(user_email);
+        const status = await checkResearchLimit(authenticatedEmail);
         return NextResponse.json({
             success: true,
             ...status
         });
     } catch (error) {
+        if (error instanceof AuthError) {
+            return authErrorResponse(error, 'Authentication is required for research usage.');
+        }
         console.error('Research GET error:', error);
         return NextResponse.json(
             { error: 'INTERNAL_ERROR', message: 'Failed to get research usage', details: error.message },

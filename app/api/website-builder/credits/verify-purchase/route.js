@@ -1,138 +1,70 @@
 import { NextResponse } from 'next/server';
-import crypto from 'crypto';
-import { databases, DB_ID } from '@/services/appwrite-admin';
-import {
-    WEBSITE_CREDIT_PACKAGES_COLLECTION_ID,
-    WEBSITE_USER_CREDITS_COLLECTION_ID
-} from '@/services/appwrite-collections';
-import { getOrCreateWebsiteCreditsDoc, recordWebsiteCreditTransaction } from '@/lib/website-builder-server-utils';
-import {
-    getDefaultWebsitePackageById,
-    normalizeWebsiteCreditPackage,
-} from '@/lib/website-credit-packages';
+import { withUser } from '@/lib/request-context';
+import { verifyAndFulfillCheckout, PaymentSecurityError } from '@/lib/payments/payment-verification';
+import { PURCHASE_TYPES } from '@/lib/payments/payment-config';
 
-async function addPurchasedCredits(userEmail, amount, orderId, packageId) {
-    const credits = await getOrCreateWebsiteCreditsDoc(userEmail);
-    const newPurchasedCredits = (credits.purchased_credits || 0) + amount;
-
-    const updated = await databases.updateDocument(DB_ID, WEBSITE_USER_CREDITS_COLLECTION_ID, credits.$id, {
-        purchased_credits: newPurchasedCredits
-    });
-
-    await recordWebsiteCreditTransaction({
-        userEmail,
-        amount,
-        transactionType: 'purchase',
-        orderId,
-        packageId
-    });
-
-    return {
-        success: true,
-        purchased_credits: updated.purchased_credits,
-        weekly_credits: updated.weekly_credits,
-        total_credits: (updated.weekly_credits || 0) + updated.purchased_credits
-    };
-}
+export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/website-builder/credits/verify-purchase
- * Verifies Razorpay payment and adds credits to user account
+ * Authoritatively verifies Razorpay payment and grants website builder credits
+ * Binds package and credit quantity strictly to server-side order/transaction, rejecting client tampering.
  */
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
     try {
+        const body = await request.json().catch(() => ({}));
         const {
             razorpay_order_id,
             razorpay_payment_id,
             razorpay_signature,
-            packageId,
-            email
-        } = await request.json();
+        } = body;
+        const email = ctx.assertEmail(body.email);
 
-        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !packageId || !email) {
+        if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !email) {
             return NextResponse.json(
                 { error: 'Missing required payment verification data' },
                 { status: 400 }
             );
         }
 
-        if (!process.env.RAZORPAY_KEY_SECRET) {
-            console.error('RAZORPAY_KEY_SECRET not configured');
-            return NextResponse.json(
-                { error: 'Payment verification configuration error' },
-                { status: 500 }
-            );
-        }
-
-        const generated_signature = crypto
-            .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-            .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-            .digest('hex');
-
-        if (generated_signature !== razorpay_signature) {
-            console.error('Payment signature verification failed');
-            return NextResponse.json(
-                { error: 'Payment signature verification failed' },
-                { status: 400 }
-            );
-        }
-
-        // Resolve package details from default catalog first, then DB fallback.
-        let packageData = getDefaultWebsitePackageById(packageId);
-        if (!packageData) {
-            try {
-                const pkgDoc = await databases.getDocument(DB_ID, WEBSITE_CREDIT_PACKAGES_COLLECTION_ID, packageId);
-                packageData = normalizeWebsiteCreditPackage(pkgDoc);
-            } catch {
-                return NextResponse.json(
-                    { error: 'Invalid package' },
-                    { status: 400 }
-                );
-            }
-        }
-
-        if (!packageData.isActive || packageData.credits <= 0 || packageData.priceInr <= 0) {
-            return NextResponse.json(
-                { error: 'Invalid package' },
-                { status: 400 }
-            );
-        }
-
-        const addResult = await addPurchasedCredits(
-            email,
-            packageData.credits,
-            razorpay_order_id,
-            packageId
-        );
-
-        if (!addResult.success) {
-            return NextResponse.json(
-                { error: addResult.error },
-                { status: 400 }
-            );
-        }
+        // Authoritative verification strictly scoped to website_builder_credits
+        // Notice: client-supplied packageId is intentionally NOT trusted to dictate credits
+        const result = await verifyAndFulfillCheckout({
+            razorpayOrderId: razorpay_order_id,
+            razorpayPaymentId: razorpay_payment_id,
+            razorpaySignature: razorpay_signature,
+            authenticatedUserEmail: email,
+            expectedPurchaseType: PURCHASE_TYPES.WEBSITE_BUILDER_CREDITS,
+        });
 
         return NextResponse.json({
             success: true,
-            message: `Successfully added ${packageData.credits} credits to your account!`,
+            message: result.idempotent
+                ? 'Credit purchase already processed.'
+                : `Successfully added ${result.creditsGranted} credits to your account!`,
             credits: {
-                weekly: addResult.weekly_credits,
-                purchased: addResult.purchased_credits,
-                total: addResult.total_credits
+                purchased: result.totalPurchasedCredits,
+                total: result.totalPurchasedCredits,
             },
             purchase: {
-                credits: packageData.credits,
-                amount: packageData.priceInr,
+                credits: result.creditsGranted,
                 orderId: razorpay_order_id,
-                paymentId: razorpay_payment_id
+                paymentId: razorpay_payment_id,
             }
         });
 
     } catch (error) {
+        if (error instanceof PaymentSecurityError) {
+            return NextResponse.json(
+                { error: error.message, code: error.code },
+                { status: error.statusCode }
+            );
+        }
+
         console.error('Error verifying credit purchase:', error);
         return NextResponse.json(
             { error: 'Payment verification failed', details: error.message },
             { status: 500 }
         );
     }
-}
+});

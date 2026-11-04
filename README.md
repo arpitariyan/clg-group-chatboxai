@@ -53,7 +53,7 @@ The application is built around a serverless architecture using Next.js App Rout
 
 ### 🎨 2.2 AI Image Generation & Processing
 
-- Connects to **Leonardo AI (FLUX Schnell)** for advanced text-to-image creation.
+- Connects to **Cloudflare Workers AI (FLUX.1 Schnell)** as primary provider, with **ModelScope (Qwen Image 2.1)** and **Hugging Face** fallback for advanced text-to-image creation.
 - Stores output binaries automatically in Appwrite Storage, saving a referenced link in the `ImageGeneration` collection.
 - Includes client-side background removal capabilities using `@imgly/background-removal`.
 
@@ -110,7 +110,7 @@ The `/app/api/` folder contains extensive routing modules:
 - `/api/admin/*`: 14+ endpoints for the admin panel to analyze usage, unblock users, force plan updates, etc.
 - `/api/ai/*`: Direct LLM passthroughs.
 - `/api/analyze/*` & `/api/research/*`: Deep-dive data processing routes using external search APIs and parsing libraries.
-- `/api/generate-image/*`: Webhooks and endpoints triggering Leonardo AI logic.
+- `/api/generate-image/*`: Endpoints triggering Cloudflare Workers AI, ModelScope, and Hugging Face image generation logic.
 - `/api/inngest`: The single webhook sink that the external Inngest executor hits to trigger background jobs.
 - `/api/library/*` & `/api/search/*`: Read/Write operations for chat histories and contextual data.
 - `/api/razorpay/*`: Webhook verification and order creation endpoints.
@@ -145,9 +145,14 @@ NEXT_PUBLIC_FIREBASE_API_KEY=
 # External Services
 GOOGLE_API_KEY=
 OPENROUTER_API_KEY=
-NEXT_PUBLIC_A4F_API_KEY=
+A4F_API_KEY=
+GEMINI_API_KEY=
+HF_API_KEY=
 RAZORPAY_KEY_ID=
 RAZORPAY_KEY_SECRET=
+
+# Optional, consent-gated analytics
+NEXT_PUBLIC_GA_MEASUREMENT_ID=
 
 # Email Sender for MFA
 SMTP_HOST=smtp.gmail.com
@@ -181,6 +186,16 @@ npx inngest-cli@latest dev
 ```
 
 _(The Inngest CLI automatically detects the `/api/inngest` endpoint running on `localhost:3000` and syncs the jobs)._
+
+### Inngest Probe Endpoints in Development
+
+The Inngest dev tooling may probe additional framework-specific endpoints before settling on `/api/inngest`, including:
+
+- `/.netlify/functions/inngest`
+- `/.redwood/functions/inngest`
+- `/x/inngest`
+
+This project rewrites those probe paths to `/api/inngest` in `next.config.mjs` to avoid repetitive local `404` noise while preserving the same handler behavior.
 
 ### Step 4: Access System
 

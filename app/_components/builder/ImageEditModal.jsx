@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { X } from 'lucide-react'
+import { X } from '@/components/ui/animated-icon'
 
 export default function ImageEditModal({ imageUrl, onSave, onClose }) {
     const [brightness, setBrightness] = useState(100)

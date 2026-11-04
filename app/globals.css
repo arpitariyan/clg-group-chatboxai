@@ -1,5 +1,12 @@
 @import "tailwindcss";
+
+@media (min-width: 768px) {
+  .support-sidebar {
+    display: flex;
+  }
+}
 @import "tw-animate-css";
+@import "./(landing)/_components/landing.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -13,6 +20,7 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    --pasted-bg: oklch(0.93 0 0); /* light mode — off-white dark card */
   }
 
   .dark {
@@ -24,6 +32,7 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.439 0 0);
+    --pasted-bg: oklch(0.22 0 0); /* dark mode — deep dark */
   }
 }
 
@@ -32,6 +41,9 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  /* Landing-page display face. Enables `font-display` on headings. */
+  --font-display: var(--font-space-grotesk), "Space Grotesk", var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-monument: "Barlow Condensed", "Space Grotesk", sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -65,6 +77,49 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  --animate-spin-slow: spin 3s linear infinite;
+
+  /* ── Surface / ink ramp ──────────────────────────────────────────────
+     Used by components/ui/streaming-text.tsx. These MUST be registered here
+     as `--color-*`, not only as raw `:root` vars — in Tailwind v4 a bare
+     `:root { --inset: … }` does not generate a `bg-inset` utility, it just
+     silently emits nothing. Light values live in `:root`, dark in `.dark`,
+     so `bg-inset` / `text-ink-2` follow the theme automatically. */
+  --color-page: var(--page);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-inset: var(--inset);
+  --color-hover: var(--hover);
+  --color-hover-2: var(--hover-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-brand: var(--brand-violet);
+  --color-subtle: var(--subtle);
+  --color-elevated: var(--elevated);
+}
+
+/* Non-inline on purpose: Tailwind emits these to `:root` and has the utility
+   reference the variable, so `shadow-hairline`'s nested `var(--line)` resolves
+   against the element and picks up the `.dark` value. Naming them
+   `--radius-control` inside `@theme inline` alongside a `:root` var of the same
+   name would produce a self-referential cycle. */
+@theme {
+  --radius-control: 8px;
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Composer structural morph — collapsed↔expanded, the attachment tray, the
+     send/stop swap. The slight overshoot past 1 is what makes the panel read as
+     *opening* rather than resizing. Registering it in the `--ease-*` namespace is
+     what makes `ease-composer` a real utility.
+
+     Deliberately NOT reused for typing-driven height: the same overshoot that
+     reads as "opened" reads as jitter when it fires on every keystroke, so the
+     textarea's autosize stays on a plain 150ms ease (see components/surface.js). */
+  --ease-composer: cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
 :root {
@@ -100,40 +155,78 @@
   --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
   --sidebar-border: oklch(0.929 0.013 255.508);
   --sidebar-ring: oklch(0.704 0.04 256.788);
+
+  /* Surface / ink ramp — light. Registered as utilities in `@theme inline`. */
+  --page: #fafafb;
+  --canvas: #f1f2f3;
+  --surface: #ffffff;
+  --inset: #f7f8f9;
+  --hover: #f4f5f6;
+  --hover-2: #e7e9eb;
+  --ink: #1f2124;
+  --ink-2: #62656b;
+  --ink-3: #9a9da3;
+  --line: #ecedef;
+  --line-strong: #e0e2e5;
 }
 
 .dark {
-  --background: oklch(0.129 0.042 264.695);
-  --foreground: oklch(0.984 0.003 247.858);
-  --card: oklch(0.209 0 0);
-  --card-foreground: oklch(0.984 0.003 247.858);
-  --popover: oklch(0.25 0 0);
-  --popover-foreground: oklch(0.984 0.003 247.858);
-  --primary: oklch(0.929 0.013 255.508);
-  --primary-foreground: oklch(0.208 0 0);
-  --secondary: oklch(0.279 0 0);
-  --secondary-foreground: oklch(0.984 0.003 247.858);
-  --muted: oklch(0.279 0 0);
-  --muted-foreground: oklch(0.65 0 0);
-  --accent: oklch(0.32 0 0);
-  --accent-foreground: oklch(0.984 0.003 247.858);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.551 0.027 264.364);
+  /* Premium Dark Mode Palette */
+  --background: oklch(0.145 0 0); /* Rich, deep neutral dark (#121212 / #18181b) */
+  --foreground: oklch(0.985 0 0); /* Clean white */
+  --card: oklch(0.185 0 0); /* Slightly lighter for cards */
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.185 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  
+  /* Vibrant Accents */
+  --primary: oklch(0.985 0 0); /* White for primary buttons in dark mode is very modern */
+  --primary-foreground: oklch(0.145 0 0);
+  --secondary: oklch(0.26 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.26 0 0);
+  --muted-foreground: oklch(0.70 0 0);
+  --accent: oklch(0.26 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  
+  --destructive: oklch(0.577 0.245 27.325); /* Sharp red */
+  
+  /* Borders and UI */
+  --border: oklch(0.26 0 0); /* Subtle borders */
+  --input: oklch(0.26 0 0);
+  --ring: oklch(0.45 0 0);
+  
+  /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.209 0 0);
-  --sidebar-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-primary: oklch(0.48 0 0);
-  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
-  --sidebar-border: oklch(1 0 0 / 10%);
+  
+  /* Sidebar */
+  --sidebar: oklch(0.145 0 0); /* Match background for seamless look */
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.985 0 0);
+  --sidebar-primary-foreground: oklch(0.145 0 0);
+  --sidebar-accent: oklch(0.22 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.22 0 0);
   --sidebar-ring: oklch(0.45 0 0);
+
+  /* Surface / ink ramp — dark. Mirrors the neutral dark palette above; kept
+     purple-free because the purple ramp is landing-page-only (see
+     memory_project/landing_reasoning_trace_redesign_aug23_2026.md). */
+  --page: #0f0f11;
+  --canvas: #17171a;
+  --surface: #1c1c20;
+  --inset: #202024;
+  --hover: #26262b;
+  --hover-2: #2f2f35;
+  --ink: #f2f2f4;
+  --ink-2: #a4a6ad;
+  --ink-3: #71737a;
+  --line: #2a2a30;
+  --line-strong: #3a3a42;
 }
 
 :root[data-accent='violet'] {
@@ -164,6 +257,50 @@
 :root[data-accent='indigo'] {
   --primary: oklch(0.54 0.2 282);
   --ring: oklch(0.9 0.06 276);
+}
+
+:root {
+  --chat-font-family: var(--font-geist-sans), 'Segoe UI', Arial, sans-serif;
+}
+
+:root[data-chat-font='default'] {
+  --chat-font-family: var(--font-geist-sans), 'Segoe UI', Arial, sans-serif;
+}
+
+:root[data-chat-font='sans'] {
+  --chat-font-family: 'Helvetica Neue', 'Avenir Next', Arial, sans-serif;
+}
+
+:root[data-chat-font='system'] {
+  --chat-font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', sans-serif;
+}
+
+:root[data-chat-font='dyslexic'] {
+  --chat-font-family: 'OpenDyslexic', 'Open Dyslexic', 'Atkinson Hyperlegible', Arial, sans-serif;
+}
+
+:root[data-chat-font='oswald'] {
+  --chat-font-family: 'Oswald', 'Arial Narrow', Arial, sans-serif;
+}
+
+:root[data-chat-font='boldonse'] {
+  --chat-font-family: 'Bungee', Impact, 'Arial Black', sans-serif;
+}
+
+:root[data-chat-font='libre-baskerville'] {
+  --chat-font-family: 'Libre Baskerville', Georgia, 'Times New Roman', serif;
+}
+
+:root[data-chat-font='unbounded'] {
+  --chat-font-family: 'Unbounded', 'Avenir Next', 'Segoe UI', sans-serif;
+}
+
+:root[data-chat-font='berkshire-swash'] {
+  --chat-font-family: 'Berkshire Swash', 'Brush Script MT', cursive;
+}
+
+.chat-font-content {
+  font-family: var(--chat-font-family);
 }
 
 .dark[data-accent='violet'] {
@@ -235,6 +372,28 @@ html.reduced-motion * {
   scroll-behavior: auto !important;
 }
 
+/* The composer's collapsed↔expanded morph is the largest single piece of layout
+   motion in the app, so it honours the OS preference as well as the in-app
+   `html.reduced-motion` switch above — that class is user-set and does not track
+   the system setting.
+
+   Keyed to `[data-composer]` rather than to the utility classes because Tailwind
+   arbitrary values (`duration-[260ms]`, `ease-composer`) are not stable selectors
+   to target from hand-written CSS. The elements keep their end states; only the
+   tween is removed, so nothing becomes invisible or unreachable.
+
+   `animation-delay` is reset too: the attachment tray staggers with an inline
+   delay, and a stagger with no animation would otherwise be dead time. */
+@media (prefers-reduced-motion: reduce) {
+  [data-composer],
+  [data-composer] * {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -248,7 +407,7 @@ html.reduced-motion * {
 /* Add this to your global CSS file (globals.css or app.css) */
 html,
 body {
-  height: 100vh;
+  min-height: 100%;
 }
 
 * {
@@ -328,6 +487,11 @@ body {
 .search-results-container {
   max-height: calc(100vh - 200px);
   overflow-y: auto;
+}
+
+/* Force dialog content to clip properly */
+[data-radix-dialog-content] {
+  overflow: hidden !important;
 }
 
 /* Calendar dropdown selects styling */
@@ -411,15 +575,9 @@ html {
   }
 }
 
-@keyframes shimmer {
-  0% {
-    background-position: -1000px 0;
-  }
-
-  100% {
-    background-position: 1000px 0;
-  }
-}
+/* NOTE: `@keyframes shimmer` lives further down, next to `.animate-shimmer`.
+   A duplicate definition used to sit here; the later one won the cascade, so this
+   copy was dead code. Removed rather than kept, to avoid a silent override. */
 
 /* Blinking cursor — used in AI loading state */
 @keyframes blink {
@@ -665,5 +823,92 @@ html {
   .image-gen-loader-dot {
     transform: none;
     opacity: 0.8;
+  }
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite linear;
+}
+
+/* ===== STREAMING TEXT (components/ui/streaming-text.tsx) ===== */
+
+/* Names are kebab-case and distinct from the camelCase `fadeIn` above and from
+   tw-animate-css's `enter`/`exit` — do not add a second definition of any of
+   these, a duplicate silently wins the cascade (that bug already happened once
+   here with `@keyframes shimmer`). */
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Source favicons: keep them square and un-squashed inside flex rows.
+   Deliberately sets no background — the markup supplies `bg-surface`, and an
+   unlayered class here would outrank that utility. */
+.source-avatar {
+  object-fit: cover;
+  flex: none;
+}
+
+/* Underline that draws in from the left when the containing row is hovered.
+   Uses background-size rather than a pseudo-element so it works on inline text. */
+.animated-underline {
+  background-image: linear-gradient(currentColor, currentColor);
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0% 1px;
+  transition: background-size 300ms var(--ease-link);
+}
+
+.animated-underline:hover,
+a:hover > .animated-underline {
+  background-size: 100% 1px;
+}
+
+/* Snap animations to their end state instead of removing them, so `both`-filled
+   keyframes still land on opacity 1 and no content is left invisible. */
+@media (prefers-reduced-motion: reduce) {
+  .streaming-text,
+  .streaming-text * {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
   }
 }

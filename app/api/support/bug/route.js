@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, BUG_REPORTS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { withUser } from '@/lib/request-context';
 
-export async function POST(request) {
+export const POST = withUser(async function POST(request, ctx) {
   try {
-    const body = await request.json();
-    const { title, description, user_email } = body;
+    const body = await request.json().catch(() => ({}));
+    const { title, description } = body;
+    const user_email = ctx.assertEmail(body.user_email);
 
     // Validate request
     if (!title || !description || !user_email) {
@@ -69,13 +71,13 @@ export async function POST(request) {
       { status: 500 }
     );
   }
-}
+});
 
 // GET endpoint to retrieve user's bug reports
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
   try {
     const { searchParams } = new URL(request.url);
-    const user_email = searchParams.get('user_email');
+    const user_email = ctx.assertEmail(searchParams.get('user_email'));
 
     if (!user_email) {
       return NextResponse.json(
@@ -121,4 +123,4 @@ export async function GET(request) {
       { status: 500 }
     );
   }
-}
+});

@@ -1,67 +1,12 @@
 import { NextResponse } from 'next/server';
-import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
-import { USERS_COLLECTION_ID } from '@/services/appwrite-collections';
-
-function getUserNameFromEmail(email = '') {
-  const emailName = String(email || '').split('@')[0] || 'user';
-  const cleanName = emailName.replace(/[0-9._-]/g, '');
-  const normalized = cleanName.charAt(0).toUpperCase() + cleanName.slice(1).toLowerCase();
-  return normalized || 'User';
-}
-
-function buildDefaultUser({ email, name }) {
-  return {
-    email,
-    name: name || getUserNameFromEmail(email),
-    plan: 'free',
-    credits: 5000,
-    last_monthly_reset: new Date().toISOString().split('T')[0],
-    mfa_enabled: false,
-    mfa_email: null,
-    accent_color: 'violet',
-    language: 'en',
-  };
-}
-
-async function listUsersByEmail(email) {
-  // Some Appwrite setups may reject mixed filter+sort queries when indexes differ.
-  // Try the optimized query first, then fall back to a broader query and sort locally.
-  try {
-    return await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', email),
-      Query.orderDesc('$updatedAt'),
-      Query.limit(10),
-    ]);
-  } catch (error) {
-    const message = String(error?.message || '').toLowerCase();
-    const shouldFallback =
-      message.includes('index') ||
-      message.includes('invalid query') ||
-      message.includes('attribute not found') ||
-      message.includes('order') ||
-      message.includes('query');
-
-    if (!shouldFallback) throw error;
-
-    return databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', email),
-      Query.limit(100),
-    ]);
-  }
-}
-
-function sortByUpdatedAtDesc(documents = []) {
-  return [...documents].sort((a, b) => {
-    const aTime = new Date(a?.$updatedAt || 0).getTime() || 0;
-    const bTime = new Date(b?.$updatedAt || 0).getTime() || 0;
-    return bTime - aTime;
-  });
-}
+import { AuthError, authErrorResponse, normalizeEmail, resolveRequestUserEmail } from '@/lib/server-auth';
+import { getCanonicalUserByEmail, updateUsersByEmail } from '@/lib/user-subscription-server';
 
 export async function GET(request) {
   try {
+    const authenticatedEmail = await resolveRequestUserEmail(request, false);
     const { searchParams } = new URL(request.url);
-    const email = (searchParams.get('email') || '').trim().toLowerCase();
+    const email = normalizeEmail(searchParams.get('email'));
     const createIfMissing = searchParams.get('createIfMissing') !== 'false';
     const name = (searchParams.get('name') || '').trim();
 
@@ -69,41 +14,20 @@ export async function GET(request) {
       return NextResponse.json({ error: 'email is required' }, { status: 400 });
     }
 
-    const res = await listUsersByEmail(email);
-    const allDocs = sortByUpdatedAtDesc(res?.documents || []).slice(0, 10);
-
-    // Default to the first (most recently updated) or one with MFA explicitly on
-    let user = allDocs.find(doc => doc.mfa_enabled === true) || allDocs[0] || null;
-
-    // If duplicate documents exist, merge them to preserve the best account state
-    if (allDocs.length > 1) {
-      const merged = allDocs.reduce((best, doc) => ({
-        ...best,
-        ...doc,
-        // Critical fields — prefer truthy/upgraded values
-        mfa_enabled: best.mfa_enabled || doc.mfa_enabled,
-        mfa_email: best.mfa_email || doc.mfa_email,
-        plan: (best.plan === 'pro' || doc.plan === 'pro') ? 'pro' : (best.plan || doc.plan || 'free'),
-        credits: Math.max(best.credits || 0, doc.credits || 0),
-      }), {});
-      user = merged;
+    if (email !== authenticatedEmail) {
+      return NextResponse.json({ success: false, error: 'FORBIDDEN' }, { status: 403 });
     }
-
-    if (!user && createIfMissing) {
-      user = await databases.createDocument(
-        DB_ID,
-        USERS_COLLECTION_ID,
-        ID.unique(),
-        buildDefaultUser({ email, name })
-      );
-    }
+    const { user, created } = await getCanonicalUserByEmail({ email, name, createIfMissing });
 
     if (!user) {
       return NextResponse.json({ success: false, error: 'User not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ success: true, user });
+    return NextResponse.json({ success: true, user, created: !!created });
   } catch (error) {
+    if (error instanceof AuthError) {
+      return authErrorResponse(error, 'Authentication is required to fetch user profile.');
+    }
     return NextResponse.json(
       {
         success: false,
@@ -117,12 +41,17 @@ export async function GET(request) {
 
 export async function PATCH(request) {
   try {
+    const authenticatedEmail = await resolveRequestUserEmail(request);
     const body = await request.json();
-    const email = (body?.email || '').trim().toLowerCase();
+    const email = normalizeEmail(body?.email);
     const updates = body?.updates;
 
     if (!email || !updates || typeof updates !== 'object') {
       return NextResponse.json({ error: 'email and updates are required' }, { status: 400 });
+    }
+
+    if (email !== authenticatedEmail) {
+      return NextResponse.json({ success: false, error: 'FORBIDDEN' }, { status: 403 });
     }
 
     const safeUpdates = { ...updates };
@@ -135,33 +64,7 @@ export async function PATCH(request) {
       safeUpdates.name = normalizedName;
     }
 
-    const res = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
-      Query.equal('email', email),
-      Query.limit(100),
-    ]);
-
-    const existingDocs = Array.isArray(res?.documents) ? res.documents : [];
-
-    if (!existingDocs.length) {
-      const created = await databases.createDocument(
-        DB_ID,
-        USERS_COLLECTION_ID,
-        ID.unique(),
-        {
-          ...buildDefaultUser({ email, name: safeUpdates.name }),
-          ...safeUpdates,
-          email,
-        }
-      );
-
-      return NextResponse.json({ success: true, user: created, created: true });
-    }
-
-    const updatedDocs = await Promise.all(
-      existingDocs.map((doc) =>
-        databases.updateDocument(DB_ID, USERS_COLLECTION_ID, doc.$id, safeUpdates)
-      )
-    );
+    const updatedDocs = await updateUsersByEmail(email, safeUpdates);
 
     // Force merge the original updates back into the returned document.
     // If the Appwrite database schema is missing columns like `mfa_enabled`,
@@ -176,6 +79,9 @@ export async function PATCH(request) {
       updatedCount: updatedDocs.length,
     });
   } catch (error) {
+    if (error instanceof AuthError) {
+      return authErrorResponse(error, 'Authentication is required to update user profile.');
+    }
     return NextResponse.json(
       {
         success: false,

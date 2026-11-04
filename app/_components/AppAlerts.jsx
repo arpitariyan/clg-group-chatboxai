@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { X, CheckCircle2Icon, InfoIcon, AlertTriangleIcon, CircleXIcon } from "lucide-react"
+import { X, CheckCircle2Icon, InfoIcon, AlertTriangleIcon, CircleXIcon } from "@/components/ui/animated-icon"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { ALERT_EVENT_NAME, emitAlert } from "@/lib/alert"
 import { isSoundEffectsEnabled } from "@/lib/user-preferences"

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useCallback } from 'react'
-import { X, ZoomIn, ZoomOut, RotateCw } from 'lucide-react'
+import { X, ZoomIn, ZoomOut, RotateCw } from '@/components/ui/animated-icon'
 import Cropper from 'react-easy-crop'
 
 export default function ImageCropModal({ imageUrl, onSave, onClose }) {

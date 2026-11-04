@@ -2,12 +2,13 @@
 
 import React, { useEffect, useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { authFetch } from '@/lib/auth-fetch'
 import AuthGuard from '@/app/_components/AuthGuard'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { Trash2, Search, Atom, Calendar, ArrowRight, Filter, X, Sparkles, Image as ImageIcon, Code2, Eye, AlertTriangle } from 'lucide-react'
+import { Trash2, Search, Atom, Calendar, ArrowRight, Filter, X, Sparkles, ImageIcon, Code2, Eye, AlertTriangle } from '@/components/ui/animated-icon'
 import { useRouter } from 'next/navigation'
 import {
     Dialog,
@@ -137,7 +138,7 @@ function Library() {
 
             let libraryDocs = [], imageGenDocs = [], websiteProjectsDocs = [], chatsMap = {};
 
-            const response = await fetch(`/api/library/history?email=${encodeURIComponent(currentUser.email)}`, {
+            const response = await authFetch(`/api/library/history?email=${encodeURIComponent(currentUser.email)}`, {
                 method: 'GET',
                 cache: 'no-store'
             });
@@ -229,7 +230,7 @@ function Library() {
                 return
             }
 
-            const response = await fetch('/api/library/delete', {
+            const response = await authFetch('/api/library/delete', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -354,11 +355,11 @@ function Library() {
         return (
             <AuthGuard>
                 <div className='h-full flex flex-col px-4 md:px-8 lg:px-20 xl:px-32 py-6 md:py-10'>
-                    <h2 className='text-2xl md:text-3xl font-bold mb-6 text-foreground dark:text-white shrink-0'>Library</h2>
+                    <h2 className='text-2xl md:text-3xl font-bold mb-6 text-foreground shrink-0'>Library</h2>
                     <div className="flex-1 overflow-y-auto min-h-0">
                         <div className="space-y-4">
                             {[...Array(3)].map((_, i) => (
-                                <Card key={i} className="animate-pulse bg-card dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600">
+                                <Card key={i} className="animate-pulse bg-card/60 border-border/60">
                                     <CardHeader className="pb-3">
                                         <div className="h-4 bg-muted rounded w-3/4 mb-2"></div>
                                         <div className="h-3 bg-muted rounded w-1/2"></div>
@@ -380,8 +381,8 @@ function Library() {
         <AuthGuard>
             <div className='h-full flex flex-col px-4 md:px-8 lg:px-20 xl:px-32 py-6 md:py-10'>
                 <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-6 gap-2 shrink-0">
-                    <h2 className='text-2xl md:text-3xl font-bold text-foreground dark:text-white'>Library</h2>
-                    <p className="text-muted-foreground dark:text-gray-400 text-sm md:text-base">
+                    <h2 className='text-2xl md:text-3xl font-bold text-foreground'>Library</h2>
+                    <p className="text-muted-foreground text-sm md:text-base">
                         {filteredData.length} of {libraryData.length} items
                         {searchQuery && ` matching "${searchQuery}"`}
                     </p>
@@ -404,19 +405,19 @@ function Library() {
                 <div className="flex flex-col sm:flex-row gap-3 mb-6 shrink-0">
                     {/* Search Input */}
                     <div className="relative flex-1">
-                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground dark:text-gray-400 w-4 h-4" />
+                        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
                         <Input
                             placeholder="Search your library..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="pl-10 pr-10 bg-background dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600 text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-gray-400"
+                            className="pl-10 pr-10 bg-background/80 border-border/60 text-foreground placeholder:text-muted-foreground"
                         />
                         {searchQuery && (
                             <Button
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => setSearchQuery('')}
-                                className="absolute right-1 top-1/2 transform -translate-y-1/2 h-8 w-8 p-0 hover:bg-muted dark:hover:bg-gray-700"
+                                className="absolute right-1 top-1/2 transform -translate-y-1/2 h-8 w-8 p-0 hover:bg-muted"
                             >
                                 <X className="w-3 h-3" />
                             </Button>
@@ -429,7 +430,7 @@ function Library() {
                             <DropdownMenuTrigger asChild>
                                 <Button 
                                     variant="outline" 
-                                    className="flex items-center gap-2 bg-background dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600 text-foreground dark:text-white hover:bg-muted dark:hover:bg-gray-700 relative"
+                                    className="flex items-center gap-2 bg-background/80 border-border/60 text-foreground hover:bg-accent relative"
                                 >
                                     <Filter className="w-4 h-4" />
                                     <span className="hidden sm:inline">Filter</span>
@@ -440,15 +441,15 @@ function Library() {
                                     )}
                                 </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent className="w-56 bg-background dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600">
-                                <DropdownMenuLabel className="text-foreground dark:text-white">Filter by Date</DropdownMenuLabel>
-                                <DropdownMenuSeparator className="bg-border dark:bg-gray-600" />
+                            <DropdownMenuContent className="w-56">
+                                <DropdownMenuLabel>Filter by Date</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
                                 {filterOptions.map((option) => (
                                     <DropdownMenuItem
                                         key={option.value}
                                         onClick={() => setSelectedFilter(option.value)}
-                                        className={`cursor-pointer text-foreground dark:text-white hover:bg-muted dark:hover:bg-gray-700 ${
-                                            selectedFilter === option.value ? 'bg-muted dark:bg-gray-700 font-medium' : ''
+                                        className={`cursor-pointer ${
+                                            selectedFilter === option.value ? 'bg-muted font-medium' : ''
                                         }`}
                                     >
                                         <div className="flex items-center justify-between w-full">
@@ -478,23 +479,23 @@ function Library() {
 
                 {/* Custom Date Range Inputs */}
                 {selectedFilter === 'custom' && (
-                    <div className="flex flex-col sm:flex-row gap-3 mb-6 p-4 bg-muted/50 dark:bg-gray-800/50 rounded-lg border border-border dark:border-gray-600 shrink-0">
+                    <div className="flex flex-col sm:flex-row gap-3 mb-6 p-4 bg-card/60 backdrop-blur-xs rounded-xl border border-border/60 shrink-0">
                         <div className="flex-1">
-                            <label className="block text-sm font-medium text-foreground dark:text-white mb-2">Start Date</label>
+                            <label className="block text-sm font-medium text-foreground mb-2">Start Date</label>
                             <Input
                                 type="date"
                                 value={customDateRange.start}
                                 onChange={(e) => setCustomDateRange(prev => ({ ...prev, start: e.target.value }))}
-                                className="bg-background dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600 text-foreground dark:text-white"
+                                className="bg-background/80 border-border/60 text-foreground"
                             />
                         </div>
                         <div className="flex-1">
-                            <label className="block text-sm font-medium text-foreground dark:text-white mb-2">End Date</label>
+                            <label className="block text-sm font-medium text-foreground mb-2">End Date</label>
                             <Input
                                 type="date"
                                 value={customDateRange.end}
                                 onChange={(e) => setCustomDateRange(prev => ({ ...prev, end: e.target.value }))}
-                                className="bg-background dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600 text-foreground dark:text-white"
+                                className="bg-background/80 border-border/60 text-foreground"
                             />
                         </div>
                     </div>
@@ -536,13 +537,13 @@ function Library() {
                     ) : (
                         <div className="space-y-3 md:space-y-4 pb-8">
                         {filteredData.map((item) => (
-                            <Card key={item.libId} className="hover:shadow-md transition-shadow bg-card dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600">
+                            <Card key={item.libId} className="hover:shadow-md transition-shadow bg-card/60 backdrop-blur-xs border-border/60">
                                 <CardHeader>
                                     <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-3">
                                         <div className="flex gap-3 flex-1 min-w-0">
                                             {/* Thumbnail for completed image generations */}
                                             {item.dataType === 'image-generation' && item.status === 'completed' && item.publicUrl && (
-                                                <div className="w-16 h-16 rounded-lg overflow-hidden bg-gray-100 dark:bg-gray-800 shrink-0">
+                                                <div className="w-16 h-16 rounded-lg overflow-hidden bg-muted shrink-0">
                                                     <img 
                                                         src={item.publicUrl} 
                                                         alt="Generated" 
@@ -552,10 +553,10 @@ function Library() {
                                             )}
                                             
                                             <div className="flex-1 min-w-0">
-                                                <CardTitle className="text-base md:text-lg mb-2 line-clamp-2 leading-tight text-foreground dark:text-white">
+                                                <CardTitle className="text-base md:text-lg mb-2 line-clamp-2 leading-tight text-foreground">
                                                     {item.title || item.searchInput || item.prompt}
                                                 </CardTitle>
-                                                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 text-xs md:text-sm text-muted-foreground dark:text-gray-400">
+                                                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 text-xs md:text-sm text-muted-foreground">
                                                     {getSearchTypeBadge(item.type)}
                                                     <div className="flex items-center gap-1">
                                                         <Calendar className="w-3 h-3" />
@@ -599,26 +600,26 @@ function Library() {
                                                         <span className="sr-only">Delete</span>
                                                     </Button>
                                                 </DialogTrigger>
-                                                <DialogContent className="w-[95vw] max-w-md mx-auto rounded-3xl bg-card dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600">
+                                                <DialogContent className="w-[95vw] max-w-md mx-auto">
                                                     <DialogHeader>
-                                                        <DialogTitle className="text-left dark:text-white">
+                                                        <DialogTitle className="text-left">
                                                             Delete {item.dataType === 'image-generation' ? 'Image Generation' : 'Search'}
                                                         </DialogTitle>
-                                                        <DialogDescription className="text-left dark:text-gray-400">
+                                                        <DialogDescription className="text-left">
                                                             Are you sure you want to delete this {item.dataType === 'image-generation' ? 'image generation' : 'search'}? This action cannot be undone.
                                                         </DialogDescription>
                                                     </DialogHeader>
                                                     <div className="py-3">
-                                                        <div className="text-sm bg-muted dark:bg-gray-700 p-3 rounded border-l-4 border-muted-foreground/20 dark:border-gray-500">
-                                                            <span className="font-medium dark:text-white">
+                                                        <div className="text-sm bg-muted p-3 rounded-xl border border-border/60">
+                                                            <span className="font-medium text-foreground">
                                                                 {item.dataType === 'image-generation' ? 'Prompt:' : 'Search query:'}
                                                             </span>
-                                                            <p className="mt-1 break-all dark:text-gray-300">
+                                                            <p className="mt-1 break-all text-muted-foreground">
                                                                 "{truncateText(item.searchInput || item.prompt, 120)}"
                                                             </p>
                                                         </div>
                                                     </div>
-                                                    <DialogFooter className="flex-col-reverse sm:flex-row gap-2 sm:gap-0 rounded-3xl">
+                                                    <DialogFooter className="flex-col-reverse sm:flex-row gap-2 sm:gap-0">
                                                         <DialogTrigger asChild>
                                                             <Button
                                                                 variant="outline"

@@ -1,174 +1,189 @@
 import { NextResponse } from 'next/server';
+import { inngest } from '@/inngest/client';
 import { databases, DB_ID } from '@/services/appwrite-admin';
 import { WEBSITE_PROJECTS_COLLECTION_ID } from '@/services/appwrite-collections';
-import { enhancePrompt, generateWebsite } from '@/lib/ai-client';
-import { validateHTML } from '@/lib/website-builder-utils';
 import {
-    createWebsiteConversationMessage,
-    createWebsiteVersionDocument,
-    ensureProjectOwnership,
-    normalizeWebsiteProject,
-    updateWebsiteProjectCode
+  deductWebsiteCreditsWithLock,
+  ensureProjectOwnership,
+  queueByKey,
+  refundWebsiteCreditsWithLock,
+  updateProjectGenerationState
 } from '@/lib/website-builder-server-utils';
+import { withUser } from '@/lib/request-context';
 
-const REQUIRED_WEBSITE_BUILDER_ENV = [
-    'OPENROUTER_API_KEY',
-    'APPWRITE_DATABASE_ID',
-    'APPWRITE_PROJECT_ID',
-    'APPWRITE_API_KEY',
-    'APPWRITE_WEBSITE_PROJECTS_COLLECTION_ID',
-    'APPWRITE_WEBSITE_VERSIONS_COLLECTION_ID',
-    'APPWRITE_WEBSITE_CONVERSATIONS_COLLECTION_ID'
-];
+const GENERATION_COST = 1;
 
-function getMissingWebsiteBuilderEnv() {
-    return REQUIRED_WEBSITE_BUILDER_ENV.filter((key) => {
-        const value = process.env[key];
-        return !value || !String(value).trim();
-    });
-}
+/**
+ * POST /api/website-builder/generate
+ * 
+ * Triggers agent-based code generation using Appwrite + Inngest.
+ * Returns HTTP 202 Accepted immediately - generation runs async.
+ * 
+ * Request body:
+ * {
+ *   projectId: string,
+ *   prompt: string,
+ *   designDescription?: string
+ * }
+ * 
+ * Response (HTTP 202):
+ * { success: true, projectId, message: "Generation started", status: "generating" }
+ */
+export const POST = withUser(async function POST(request, ctx) {
+  let refundUserEmail = null;
+  let shouldRefundCredit = false;
 
-async function persistEnhancedPrompt(projectId, enhancedPrompt) {
-    if (!enhancedPrompt) return;
+  try {
+    const body = await request.json();
+    const {
+      projectId,
+      prompt,
+      enhancedPrompt,
+      originalPrompt,
+      imageUrl,
+      designDescription
+    } = body;
+    const userEmail = ctx.assertEmail(body.userEmail);
 
-    try {
-        await databases.updateDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId, {
-            enhanced_prompt: enhancedPrompt
-        });
-        return;
-    } catch {
-        // Fallback schema compatibility.
+    if (!userEmail) {
+      return NextResponse.json({ error: 'User email is required' }, { status: 401 });
     }
 
-    try {
-        await databases.updateDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId, {
-            description: enhancedPrompt
-        });
-    } catch {
-        // Ignore if neither schema supports storing enhanced prompt.
+    const effectivePrompt = (enhancedPrompt || originalPrompt || prompt || '').trim();
+
+    if (!projectId || !effectivePrompt) {
+      return NextResponse.json(
+        { error: 'projectId and prompt are required' },
+        { status: 400 }
+      );
     }
-}
 
-export async function POST(request) {
-    let requestBody = null;
-    try {
-        const missingEnv = getMissingWebsiteBuilderEnv();
-        if (missingEnv.length > 0) {
-            return NextResponse.json(
-                {
-                    error: 'Website generation is not configured on the server',
-                    details: `Missing environment variables: ${missingEnv.join(', ')}`,
-                    missingEnv
-                },
-                { status: 500 }
-            );
-        }
-
-        requestBody = await request.json();
-        const { projectId, enhancedPrompt, originalPrompt, userEmail } = requestBody;
-
-        if (!projectId || !userEmail) {
-            return NextResponse.json(
-                { error: 'Project ID and user email are required' },
-                { status: 400 }
-            );
-        }
-
-        const project = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId);
-        if (!ensureProjectOwnership(project, userEmail)) {
-            return NextResponse.json(
-                { error: 'You are not allowed to generate this project' },
-                { status: 403 }
-            );
-        }
-
-        const normalizedProject = normalizeWebsiteProject(project);
-        if (normalizedProject.current_code) {
-            return NextResponse.json({
-                success: true,
-                message: 'Website already generated',
-                generatedAlready: true,
-                versionId: normalizedProject.current_version_id || null
-            });
-        }
-
-        // console.log(`Generating website for project ${projectId}...`);
-
-        const rawPrompt = (originalPrompt || normalizedProject.original_prompt || '').trim();
-        let promptToUse = (enhancedPrompt || normalizedProject.enhanced_prompt || '').trim();
-
-        // Analyze/enhance prompt before generation when we only have the raw input.
-        if (!promptToUse || (rawPrompt && promptToUse === rawPrompt)) {
-            if (!rawPrompt) {
-                return NextResponse.json(
-                    { error: 'Missing prompt data for generation' },
-                    { status: 400 }
-                );
-            }
-
-            const improvedPrompt = await enhancePrompt(rawPrompt);
-            promptToUse = improvedPrompt;
-
-            await persistEnhancedPrompt(projectId, improvedPrompt);
-            await createWebsiteConversationMessage(
-                projectId,
-                'assistant',
-                `I've enhanced your prompt to: "${improvedPrompt}"`
-            );
-        }
-
-        // Step 1: Generate website code
-        const generatedCode = await generateWebsite(promptToUse);
-
-        // Step 2: Validate the generated code
-        const validation = validateHTML(generatedCode);
-        if (!validation.isValid) {
-            console.error('Generated invalid HTML:', validation.errors);
-            // Still save it, but log the errors
-        }
-
-        // Step 3: Create initial version
-        const version = await createWebsiteVersionDocument({
-            projectId,
-            code: generatedCode
-        });
-
-        // Step 4: Update project with current code and version
-        await updateWebsiteProjectCode(projectId, generatedCode, version.$id);
-
-        // Step 5: Add AI response to conversation
-        await createWebsiteConversationMessage(
-            projectId,
-            'assistant',
-            'I\'ve created your website! You can see it in the preview panel. Feel free to request any changes.'
-        );
-
-        // console.log(`Website generated successfully for project ${projectId}`);
-
-        return NextResponse.json({
-            success: true,
-            versionId: version.$id,
-            message: 'Website generated successfully'
-        });
-
-    } catch (error) {
-        console.error('Error in generate endpoint:', error);
-
-        try {
-            if (requestBody?.projectId) {
-                await createWebsiteConversationMessage(
-                    requestBody.projectId,
-                    'assistant',
-                    `Sorry, I encountered an error generating your website: ${error.message}`
-                );
-            }
-        } catch {
-            // Ignore secondary failure while logging generation error.
-        }
-
+    return await queueByKey(projectId, async () => {
+      // Re-fetch project to guarantee atomic state check after any queued predecessor
+      let currentProject;
+      try {
+        currentProject = await databases.getDocument(DB_ID, WEBSITE_PROJECTS_COLLECTION_ID, projectId);
+      } catch (projectError) {
         return NextResponse.json(
-            { error: 'Failed to generate website', details: error.message },
-            { status: 500 }
+          { error: 'Project not found', details: projectError?.message },
+          { status: 404 }
         );
+      }
+
+      if (!ensureProjectOwnership(currentProject, userEmail)) {
+        return NextResponse.json(
+          { error: 'Project not found or unauthorized' },
+          { status: 403 }
+        );
+      }
+
+      const updatedAtMs = new Date(currentProject.updated_at || currentProject.$updatedAt || Date.now()).getTime();
+      const isStale = (currentProject.status === 'queued' || currentProject.status === 'generating') && (Date.now() - updatedAtMs > 15 * 60 * 1000);
+
+      // Idempotency guard: If project is actively queued or generating, do not double-bill or duplicate Inngest jobs
+      if ((currentProject.status === 'queued' || currentProject.status === 'generating') && !isStale) {
+        return NextResponse.json(
+          {
+            success: true,
+            projectId,
+            message: 'Generation already in progress',
+            status: currentProject.status,
+            resumed: true,
+          },
+          { status: 202 }
+        );
+      }
+
+      const deduction = await deductWebsiteCreditsWithLock(currentProject.user_email, GENERATION_COST);
+      if (!deduction.success) {
+        return NextResponse.json(
+          {
+            error: 'Insufficient credits',
+            message: 'You do not have enough credits to generate a new website.',
+            credits: {
+              weekly: deduction.weekly_credits,
+              purchased: deduction.purchased_credits,
+              total: deduction.total_credits
+            }
+          },
+          { status: 402 }
+        );
+      }
+
+      refundUserEmail = currentProject.user_email;
+      shouldRefundCredit = true;
+
+      const generationJobId = body.idempotencyKey
+        ? String(body.idempotencyKey).trim().slice(0, 80)
+        : `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      await updateProjectGenerationState(projectId, {
+        status: 'queued',
+        generation_step: 'Queued'
+      });
+
+      // Validate imageUrl strictly so text descriptions are never passed to image extractors
+      const isValidImageUrl = typeof imageUrl === 'string' && (
+        imageUrl.startsWith('http://') ||
+        imageUrl.startsWith('https://') ||
+        imageUrl.startsWith('data:image/')
+      );
+      const sanitizedImageUrl = isValidImageUrl ? imageUrl.trim() : null;
+      const sanitizedDesignDescription = typeof designDescription === 'string' ? designDescription.trim() : null;
+
+      try {
+        // Emit Inngest event for agent-based generation with durable jobId and timestamp
+        await inngest.send({
+          name: 'website-builder/generate.requested',
+          data: {
+            jobId: generationJobId,
+            projectId,
+            userEmail,
+            enhancedPrompt: enhancedPrompt || effectivePrompt,
+            originalPrompt: originalPrompt || effectivePrompt,
+            imageUrl: sanitizedImageUrl,
+            designDescription: sanitizedDesignDescription,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      } catch (dispatchError) {
+        console.error('[Generate Route] Inngest dispatch failed:', dispatchError);
+        // Rollback project status so project is not permanently stranded in 'queued'
+        try {
+          await updateProjectGenerationState(projectId, {
+            status: 'failed',
+            generation_step: 'Dispatch failed: could not queue background worker'
+          });
+        } catch (_) {}
+        throw dispatchError;
+      }
+
+      shouldRefundCredit = false;
+
+      return NextResponse.json(
+        {
+          success: true,
+          projectId,
+          jobId: generationJobId,
+          message: 'Generation started',
+          status: 'generating',
+        },
+        { status: 202 }
+      );
+    });
+  } catch (error) {
+    if (shouldRefundCredit && refundUserEmail) {
+      try {
+        await refundWebsiteCreditsWithLock(refundUserEmail, GENERATION_COST);
+      } catch (refundError) {
+        console.error('[Generate Route] Refund failed:', refundError.message);
+      }
     }
-}
+
+    console.error('[Generate Route] Error:', error);
+    return NextResponse.json(
+      { error: 'Failed to start generation', details: error.message },
+      { status: 500 }
+    );
+  }
+});

@@ -2,11 +2,12 @@ import { NextResponse } from 'next/server';
 import { databases, DB_ID, Query } from '@/services/appwrite-admin';
 import { WEBSITE_PROJECTS_COLLECTION_ID } from '@/services/appwrite-collections';
 import { normalizeDoc } from '@/lib/website-builder-server-utils';
+import { withUser } from '@/lib/request-context';
 
-export async function GET(request) {
+export const GET = withUser(async function GET(request, ctx) {
     try {
         const { searchParams } = new URL(request.url);
-        const userEmail = searchParams.get('userEmail');
+        const userEmail = ctx.assertEmail(searchParams.get('userEmail'));
         const page = parseInt(searchParams.get('page') || '1');
         const limit = parseInt(searchParams.get('limit') || '20');
 
@@ -44,4 +45,4 @@ export async function GET(request) {
             { status: 500 }
         );
     }
-}
+});

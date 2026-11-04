@@ -1,0 +1,483 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "ChatboxAI API",
+    "description": "Unified API for accessing multiple AI models including GPT-4, Claude, Gemini, and more.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "ChatboxAI Support",
+      "url": "https://chatboxai.co.in/support",
+      "email": "arpitariyanm@gmail.com"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.chatboxai.co.in",
+      "description": "Production server"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "Local development server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "cbx_live_* or cbx_test_*",
+        "description": "API key in the format cbx_live_... or cbx_test_..."
+      }
+    },
+    "schemas": {
+      "Message": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant", "system"],
+            "description": "The role of the message sender"
+          },
+          "content": {
+            "type": "string",
+            "description": "The message content"
+          }
+        }
+      },
+      "ChatCompletionRequest": {
+        "type": "object",
+        "required": ["model", "messages"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "ID of the model to use (e.g., gpt-4o-mini, claude-3-5-sonnet)"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "description": "Array of message objects"
+          },
+          "temperature": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 2,
+            "default": 0.7,
+            "description": "Sampling temperature"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 500,
+            "description": "Maximum tokens in response"
+          },
+          "top_p": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1.0,
+            "description": "Nucleus sampling parameter"
+          },
+          "frequency_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2,
+            "default": 0,
+            "description": "How much to penalize new tokens based on frequency"
+          },
+          "presence_penalty": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 2,
+            "default": 0,
+            "description": "How much to penalize new tokens based on presence"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable streaming responses"
+          }
+        }
+      },
+      "ChatChoice": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/Message"
+          },
+          "finish_reason": {
+            "type": "string",
+            "enum": ["stop", "length", "content_filter"],
+            "description": "Reason completion was finished"
+          },
+          "index": {
+            "type": "integer",
+            "description": "Index of this choice"
+          }
+        }
+      },
+      "ChatCompletionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique completion ID"
+          },
+          "object": {
+            "type": "string",
+            "enum": ["text_completion"],
+            "description": "Object type"
+          },
+          "created": {
+            "type": "integer",
+            "description": "Unix timestamp"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model used"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChatChoice"
+            }
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "prompt_tokens": {
+                "type": "integer"
+              },
+              "completion_tokens": {
+                "type": "integer"
+              },
+              "total_tokens": {
+                "type": "integer"
+              }
+            }
+          },
+          "cost_inr": {
+            "type": "number",
+            "description": "Cost of this request in INR"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "authentication_error",
+                  "invalid_request_error",
+                  "rate_limit_error",
+                  "server_error"
+                ]
+              },
+              "code": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/chat/completions": {
+      "post": {
+        "summary": "Create chat completion",
+        "operationId": "createChatCompletion",
+        "tags": ["Chat"],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatCompletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCompletionResponse"
+                }
+              }
+            },
+            "headers": {
+              "X-RateLimit-Remaining-Requests": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Remaining requests in current window"
+              },
+              "X-RateLimit-Remaining-Tokens": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Remaining tokens in current window"
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found"
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait before retrying"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "summary": "List available models",
+        "operationId": "listModels",
+        "tags": ["Models"],
+        "responses": {
+          "200": {
+            "description": "List of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": ["list"]
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "object": {
+                            "type": "string"
+                          },
+                          "owned_by": {
+                            "type": "string"
+                          },
+                          "pricing": {
+                            "type": "object",
+                            "properties": {
+                              "input": {
+                                "type": "number"
+                              },
+                              "output": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "summary": "Perform web search",
+        "operationId": "search",
+        "tags": ["Search"],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  },
+                  "num_results": {
+                    "type": "integer",
+                    "default": 5,
+                    "maximum": 20
+                  },
+                  "include_citations": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Search results"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "429": {
+            "description": "Rate limit exceeded"
+          }
+        }
+      }
+    },
+    "/v1/embeddings": {
+      "post": {
+        "summary": "Generate embeddings",
+        "operationId": "createEmbeddings",
+        "tags": ["Embeddings"],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["input"],
+                "properties": {
+                  "input": {
+                    "oneOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "model": {
+                    "type": "string",
+                    "default": "text-embedding-3-small",
+                    "enum": ["text-embedding-3-small", "text-embedding-3-large"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Embedding response"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    },
+    "/v1/keys": {
+      "post": {
+        "summary": "Create API key",
+        "operationId": "createApiKey",
+        "tags": ["API Keys"],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "API key created"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      },
+      "get": {
+        "summary": "List API keys",
+        "operationId": "listApiKeys",
+        "tags": ["API Keys"],
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of API keys"
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Chat",
+      "description": "Chat completion endpoints"
+    },
+    {
+      "name": "Search",
+      "description": "Web search endpoints"
+    },
+    {
+      "name": "Embeddings",
+      "description": "Text embeddings endpoints"
+    },
+    {
+      "name": "Models",
+      "description": "Model information endpoints"
+    },
+    {
+      "name": "API Keys",
+      "description": "API key management"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
+import { authFetch } from '@/lib/auth-fetch'
 
 /**
  * Custom hook for managing website builder credits
@@ -23,7 +24,7 @@ export function useCreditManager() {
 
         try {
             setError(null)
-            const response = await fetch(`/api/website-builder/credits?email=${encodeURIComponent(currentUser.email)}`)
+            const response = await authFetch(`/api/website-builder/credits?email=${encodeURIComponent(currentUser.email)}`)
             const contentType = response.headers.get('content-type')
             
             if (!contentType || !contentType.includes('application/json')) {
@@ -76,7 +77,7 @@ export function useCreditManager() {
         }))
 
         try {
-            const response = await fetch('/api/website-builder/credits/deduct', {
+            const response = await authFetch('/api/website-builder/credits/deduct', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

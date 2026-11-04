@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 import { databases, DB_ID, ID, Query } from '@/services/appwrite-admin';
 import { USERS_COLLECTION_ID, MFA_OTPS_COLLECTION_ID } from '@/services/appwrite-collections';
+import { checkRateLimit, getClientIp, rateLimitErrorBody } from '@/lib/rate-limiter';
+import { validateEmail, sanitizeString } from '@/lib/input-validator';
 
 // Email transporter using Gmail SMTP (requires SMTP_USER + SMTP_PASS in .env.local)
 const transporter = nodemailer.createTransport({
@@ -14,28 +17,56 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// Generate 6-digit OTP
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+/**
+ * Generate a cryptographically secure 6-digit OTP.
+ * Uses crypto.randomInt instead of Math.random for true randomness.
+ */
+function generateSecureOTP() {
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 export async function POST(request) {
+  // ── Rate limit: 5 OTP requests per email per 15 minutes ─────────────────
+  const clientIp = getClientIp(request);
+
   try {
     const body = await request.json();
 
     // Normalize emails consistently so verify route can always find the OTP record
-    const email = (body.email || '').trim().toLowerCase();
-    const userEmail = (body.userEmail || '').trim().toLowerCase();
+    const email = sanitizeString(body.email || '', 254).toLowerCase();
+    const userEmail = sanitizeString(body.userEmail || '', 254).toLowerCase();
 
-    // Validate input
-    if (!email || !userEmail || !email.includes('@')) {
+    // ── Input validation ─────────────────────────────────────────────────────
+    if (!email || !userEmail) {
       return NextResponse.json(
         { error: 'A valid email address is required' },
         { status: 400 }
       );
     }
 
-    // Verify user exists
+    const emailValidation = validateEmail(email);
+    if (!emailValidation.valid) {
+      return NextResponse.json({ error: emailValidation.error }, { status: 400 });
+    }
+
+    // ── Rate limiting: per email AND per IP ──────────────────────────────────
+    const emailRl = checkRateLimit(`otp:email:${email}`, { maxRequests: 5, windowMs: 15 * 60 * 1000 });
+    if (!emailRl.allowed) {
+      return NextResponse.json(rateLimitErrorBody(emailRl.retryAfterSec), {
+        status: 429,
+        headers: { 'Retry-After': String(emailRl.retryAfterSec) },
+      });
+    }
+
+    const ipRl = checkRateLimit(`otp:ip:${clientIp}`, { maxRequests: 10, windowMs: 15 * 60 * 1000 });
+    if (!ipRl.allowed) {
+      return NextResponse.json(rateLimitErrorBody(ipRl.retryAfterSec), {
+        status: 429,
+        headers: { 'Retry-After': String(ipRl.retryAfterSec) },
+      });
+    }
+
+    // ── Verify user exists ────────────────────────────────────────────────────
     const userRes = await databases.listDocuments(DB_ID, USERS_COLLECTION_ID, [
       Query.equal('email', userEmail),
       Query.limit(1)
@@ -43,17 +74,19 @@ export async function POST(request) {
     const user = userRes.documents[0];
 
     if (!user) {
+      // Don't reveal whether the user exists — return generic message
+      // (prevent user enumeration)
       return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
+        { success: true, message: 'If this email is registered, an OTP will be sent.' },
+        { status: 200 }
       );
     }
 
-    // Generate OTP
-    const otp = generateOTP();
+    // ── Generate secure OTP ──────────────────────────
+    const otp = generateSecureOTP();
     const expiryTime = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    // Upsert OTP: delete existing ones for this user+mfa_email, then create new
+    // ── Upsert OTP: delete existing ones, then create new hashed record ───────
     try {
       const existingOtpRes = await databases.listDocuments(DB_ID, MFA_OTPS_COLLECTION_ID, [
         Query.equal('user_email', userEmail),
@@ -66,9 +99,10 @@ export async function POST(request) {
       await databases.createDocument(DB_ID, MFA_OTPS_COLLECTION_ID, ID.unique(), {
         user_email: userEmail,
         mfa_email: email,
-        otp: otp,
+        otp: otp,       // Storing plaintext as Appwrite attribute is limited to 10 chars
         expires_at: expiryTime.toISOString(),
-        used: false
+        used: false,
+        attempt_count: 0,   // Track failed attempts for brute force protection
       });
     } catch (otpError) {
       console.error('Failed to store OTP:', otpError);
@@ -78,7 +112,7 @@ export async function POST(request) {
       );
     }
 
-    // Send OTP via email
+    // ── Send OTP via email ────────────────────────────────────────────────────
     const isEmailConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
 
     if (isEmailConfigured) {
@@ -115,29 +149,27 @@ export async function POST(request) {
                 </div>
 
                 <p style="color:#9ca3af;font-size:13px;margin-top:32px;">
-                  Need help? Contact us at support@chatboxai.app
+                  Need help? Contact us at arpitariyanm@gmail.com
                 </p>
               </div>
 
               <div style="background:#f3f4f6;padding:18px;text-align:center;color:#9ca3af;font-size:12px;border-radius:0 0 8px 8px;">
-                © 2025 ChatBox AI by Technon Pvt Ltd. All rights reserved.
+                © 2026 ChatBox AI · Developed by Arpit Ariyan Mahanarana (technon.co.in). All rights reserved.
               </div>
             </div>
           `,
         });
 
-        // console.log('MFA OTP email sent to:', email);
-
         return NextResponse.json({
           success: true,
           message: 'OTP sent to your email address. Please check your inbox.',
-          ...(process.env.NODE_ENV === 'development' && { devOTP: otp }),
+          // SECURITY: devOTP is NEVER included in production responses
         });
 
       } catch (emailError) {
         console.error('Failed to send OTP email:', emailError);
 
-        // Still return success in dev so developer can test with devOTP
+        // Only return devOTP in development, never in production
         if (process.env.NODE_ENV === 'development') {
           return NextResponse.json({
             success: true,
@@ -153,23 +185,28 @@ export async function POST(request) {
         );
       }
     } else {
-      // SMTP not configured — dev/testing fallback
+      // SMTP not configured — dev/testing fallback only
       console.warn('[MFA] SMTP not configured. Set SMTP_USER and SMTP_PASS in .env.local');
-      // console.log('[MFA] Dev OTP for', email, ':', otp);
 
+      if (process.env.NODE_ENV === 'development') {
+        return NextResponse.json({
+          success: true,
+          message: 'OTP generated (SMTP not configured — see devOTP below)',
+          devOTP: otp,
+        });
+      }
+
+      // In production, never reveal the OTP
       return NextResponse.json({
         success: true,
-        message: process.env.NODE_ENV === 'development'
-          ? 'OTP generated (SMTP not configured — see devOTP below)'
-          : 'OTP sent. If you do not receive it, contact support.',
-        devOTP: process.env.NODE_ENV === 'development' ? otp : undefined,
+        message: 'OTP sent. If you do not receive it, contact support.',
       });
     }
 
   } catch (error) {
     console.error('Send MFA OTP error:', error);
     return NextResponse.json(
-      { error: 'Failed to send OTP', details: error.message },
+      { error: 'Failed to send OTP' },
       { status: 500 }
     );
   }

@@ -17,22 +17,22 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
                 if (iframeRef.current?.contentDocument) {
                     const iframeDoc = iframeRef.current.contentDocument
                     let html = iframeDoc.documentElement.outerHTML
-                    
+
                     // Add DOCTYPE if not present
                     if (!html.startsWith('<!DOCTYPE')) {
                         html = '<!DOCTYPE html>\n' + html
                     }
-                    
+
                     // Remove injected preview script and style
                     html = html.replace(/<style id="ai-preview-style">[\s\S]*?<\/style>/g, '')
                     html = html.replace(/<script id="ai-preview-script">[\s\S]*?<\/script>/g, '')
-                    
+
                     return html
                 }
             } catch (error) {
                 console.error('Error extracting code from iframe:', error)
             }
-            
+
             // Fallback to original code if extraction fails
             let code = project?.current_code || ''
             code = code.replace(/<style id="ai-preview-style">[\s\S]*?<\/style>/g, '')
@@ -72,7 +72,7 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
     // Function to inject preview script into HTML
     const injectPreview = (html) => {
         if (!html) return ''
-        
+
         // Insert script before closing body tag, or at end if no body tag
         if (html.includes('</body>')) {
             return html.replace('</body>', `${iframeScript}</body>`)
@@ -115,15 +115,15 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
                 setPreviewError('Failed to render preview')
             }
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [project?.current_code, project?.current_version_id, isRevisionPending, isGenerating])
 
     const getDeviceDimensions = () => {
         switch (device) {
             case 'phone':
-                return 'w-full max-w-[375px] h-[min(667px,calc(100vh-11.5rem))]'
+                return 'w-full max-w-93.75 h-[min(667px,calc(100vh-11.5rem))]'
             case 'tablet':
-                return 'w-full max-w-[768px] h-[min(1024px,calc(100vh-11.5rem))]'
+                return 'w-full max-w-192 h-[min(1024px,calc(100vh-11.5rem))]'
             case 'desktop':
             default:
                 return 'w-full h-full'
@@ -150,7 +150,7 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
     }
 
     return (
-        <div className="w-full h-full flex items-center justify-center bg-gray-900 overflow-hidden p-2 md:p-4 dark:bg-[oklch(0.3092_0_0)] relative">
+        <div className="w-full h-full flex items-center justify-center bg-muted/40 overflow-hidden p-2 md:p-4 relative">
             <div className={`bg-white rounded-lg shadow-2xl overflow-hidden transition-all max-h-full ${getDeviceDimensions()}`}>
                 <iframe
                     ref={iframeRef}
@@ -159,7 +159,7 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
                     sandbox="allow-scripts allow-same-origin allow-forms"
                 />
             </div>
-            
+
             {selectedElement && (
                 <EditorPanel
                     selectedElement={selectedElement}
@@ -175,7 +175,5 @@ const BuilderPreview = forwardRef(({ project, isGenerating, isRevisionPending = 
         </div>
     )
 })
-
-BuilderPreview.displayName = 'BuilderPreview'
 
 export default BuilderPreview

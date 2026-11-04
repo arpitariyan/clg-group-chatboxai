@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { Loader2Icon, SearchIcon } from 'lucide-react'
+import { Loader2Icon, SearchIcon } from '@/components/ui/animated-icon'
 import Link from 'next/link'
 
 export default function SnapshotPage() {
@@ -74,19 +74,19 @@ export default function SnapshotPage() {
 
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-background dark:bg-[oklch(0.2478_0_0)]">
+            <div className="flex items-center justify-center min-h-[100dvh] bg-transparent">
                 <Loader2Icon className="size-10 animate-spin text-primary" />
             </div>
         )
     }
 
     return (
-        <div className="min-h-screen bg-background dark:bg-[oklch(0.2478_0_0)] px-4 py-8">
+        <div className="min-h-[100dvh] bg-transparent px-4 py-8">
             <div className="max-w-7xl mx-auto">
                 {/* Header */}
                 <div className="mb-8">
-                    <h1 className="text-4xl font-bold text-foreground dark:text-white mb-2">Snapshot</h1>
-                    <p className="text-muted-foreground dark:text-gray-300">
+                    <h1 className="text-3xl sm:text-4xl font-bold text-foreground mb-2">Gallery</h1>
+                    <p className="text-muted-foreground">
                         Explore websites created by our community with AI
                     </p>
                 </div>
@@ -104,9 +104,9 @@ export default function SnapshotPage() {
                                     setPage(1)
                                 }}
                                 placeholder="Search projects..."
-                                className="w-full pl-10 pr-4 py-3 rounded-lg border border-border dark:border-gray-600 bg-card dark:bg-[oklch(0.3092_0_0)] text-foreground dark:text-white placeholder-muted-foreground dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+                                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-border/60 bg-card/60 backdrop-blur-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-all shadow-xs"
                             />
-                            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground dark:text-gray-400" size={20} />
+                            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" size={18} />
                         </div>
 
                         {/* Date Filter */}
@@ -116,7 +116,7 @@ export default function SnapshotPage() {
                                     id="date"
                                     value={dateValue}
                                     placeholder="Select date..."
-                                    className="w-full md:w-auto pr-10 py-3 rounded-lg border border-border dark:border-gray-600 bg-card dark:bg-[oklch(0.3092_0_0)] text-foreground dark:text-white focus:outline-none focus:ring-2 focus:ring-primary transition-all min-w-[200px]"
+                                    className="w-full md:w-auto pr-10 py-3 rounded-xl border border-border/60 bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary transition-all min-w-50 shadow-sm"
                                     onChange={(e) => {
                                         const date = new Date(e.target.value)
                                         setDateValue(e.target.value)
@@ -145,7 +145,7 @@ export default function SnapshotPage() {
                                         </Button>
                                     </PopoverTrigger>
                                     <PopoverContent
-                                        className="w-auto overflow-hidden p-0 bg-card dark:bg-[oklch(0.3092_0_0)] border-border dark:border-gray-600"
+                                        className="w-auto overflow-hidden p-0 bg-card border-border/60 rounded-xl shadow-lg"
                                         align="end"
                                         alignOffset={-8}
                                         sideOffset={10}
@@ -175,7 +175,7 @@ export default function SnapshotPage() {
                                         setDateValue('')
                                         setPage(1)
                                     }}
-                                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-lg border border-border dark:border-gray-600 bg-card dark:bg-[oklch(0.3092_0_0)] text-foreground dark:text-white hover:bg-destructive/10 hover:border-destructive dark:hover:border-destructive hover:text-destructive dark:hover:text-destructive transition-all whitespace-nowrap"
+                                    className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-border/60 bg-card text-foreground hover:bg-destructive/10 hover:border-destructive hover:text-destructive transition-all whitespace-nowrap shadow-sm"
                                     title="Clear date filter"
                                     aria-label="Clear date filter"
                                 >
@@ -228,10 +228,10 @@ export default function SnapshotPage() {
                                 <Link
                                     key={project.id}
                                     href={`/website-builder/preview/${project.id}`}
-                                    className="group block bg-card dark:bg-[oklch(0.3092_0_0)] rounded-xl overflow-hidden border border-border dark:border-gray-600 hover:border-primary dark:hover:border-primary transition-all hover:shadow-lg"
+                                    className="group block bg-card/60 backdrop-blur-xs rounded-2xl overflow-hidden border border-border/60 hover:border-primary/50 transition-all hover:shadow-md"
                                 >
                                     {/* Preview Thumbnail */}
-                                    <div className="relative h-48 bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                                    <div className="relative h-48 bg-muted overflow-hidden">
                                         {previewHtml ? (
                                             <iframe
                                                 srcDoc={previewHtml}
@@ -258,13 +258,13 @@ export default function SnapshotPage() {
 
                                     {/* Project Info */}
                                     <div className="p-4">
-                                        <h3 className="text-lg font-semibold text-foreground dark:text-white mb-1 truncate">
+                                        <h3 className="text-lg font-semibold text-foreground mb-1 truncate">
                                             {project.project_name}
                                         </h3>
-                                        <p className="text-sm text-muted-foreground dark:text-gray-400 mb-2 truncate">
+                                        <p className="text-sm text-muted-foreground mb-2 truncate">
                                             by {project.user_email?.split('@')?.[0] || 'Anonymous'}
                                         </p>
-                                        <p className="text-xs text-muted-foreground dark:text-gray-500">
+                                        <p className="text-xs text-muted-foreground">
                                             {createdAt ? new Date(createdAt).toLocaleDateString() : 'Unknown date'}
                                         </p>
                                     </div>
@@ -279,17 +279,17 @@ export default function SnapshotPage() {
                                 <button
                                     onClick={() => setPage(p => Math.max(1, p - 1))}
                                     disabled={page === 1}
-                                    className="px-4 py-2 bg-card dark:bg-[oklch(0.3092_0_0)] border border-border dark:border-gray-600 rounded-lg text-foreground dark:text-white disabled:opacity-50 disabled:cursor-not-allowed hover:border-primary dark:hover:border-primary transition-colors"
+                                    className="px-4 py-2 bg-card/60 backdrop-blur-xs border border-border/60 rounded-xl text-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-accent transition-colors shadow-xs"
                                 >
                                     Previous
                                 </button>
-                                <span className="px-4 py-2 text-foreground dark:text-white">
+                                <span className="px-4 py-2 text-foreground">
                                     Page {page} of {pagination.totalPages}
                                 </span>
                                 <button
                                     onClick={() => setPage(p => Math.min(pagination.totalPages, p + 1))}
                                     disabled={page === pagination.totalPages}
-                                    className="px-4 py-2 bg-card dark:bg-[oklch(0.3092_0_0)] border border-border dark:border-gray-600 rounded-lg text-foreground dark:text-white disabled:opacity-50 disabled:cursor-not-allowed hover:border-primary dark:hover:border-primary transition-colors"
+                                    className="px-4 py-2 bg-card/60 backdrop-blur-xs border border-border/60 rounded-xl text-foreground disabled:opacity-50 disabled:cursor-not-allowed hover:bg-accent transition-colors shadow-xs"
                                 >
                                     Next
                                 </button>

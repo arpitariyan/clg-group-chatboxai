@@ -1,0 +1,35 @@
+# ChatBox AI
+> Advanced Multi-Model AI Assistant
+
+ChatBox AI is a comprehensive artificial intelligence platform that provides access to multiple state-of-the-art AI models in a single unified interface.
+
+## Models Available
+- GPT-4o (OpenAI)
+- Claude 4.7 Sonnet (Anthropic)
+- Gemini Pro 1.5 (Google)
+- Llama 3.1 (Meta)
+- Mistral
+- NVIDIA Nemotron Omni (Multimodal)
+- Image Generation (FLUX.1 Schnell, Qwen Image 2.1, Stable Diffusion)
+
+## Key Features
+- **AI Chat**: Switch between 15+ models mid-conversation with context memory.
+- **Image Generation**: Create visuals from text using multiple leading engines.
+- **Code Assistant**: Write, debug, and explain code in over 50 programming languages.
+- **Deep Research**: Real-time web search capabilities with citations and source verification.
+- **File Analysis**: Upload and analyze PDFs, images, videos, and audio (up to 10MB per file) via multimodal models.
+- **Voice AI**: Voice interaction support.
+- **Website Builder**: Generate simple websites via AI.
+
+## Pricing
+- **Free Plan**: Access to basic models, 50 messages/day, 10 image generations/day, 7-day chat history.
+- **Pro Plan**: Unlimited access to premium models, unlimited messages, advanced features (voice, file upload, website builder).
+
+## Company Information
+- Developer: Technon Pvt Ltd
+- Website: https://chatboxai.co.in
+- Support Email: arpitariyanm@gmail.com
+- Social Profiles:
+  - LinkedIn: https://www.linkedin.com/in/arpit-ariyan-maharana-21a62524a/
+  - Instagram: https://www.instagram.com/chatboxai_uiux/
+  - GitHub: https://github.com/arpitariyan

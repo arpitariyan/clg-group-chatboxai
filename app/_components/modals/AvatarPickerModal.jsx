@@ -8,7 +8,7 @@ import {
     DialogTitle,
     DialogDescription,
 } from '@/components/ui/dialog'
-import { Check } from 'lucide-react'
+import { Check } from '@/components/ui/animated-icon'
 
 const MEN_AVATARS = [
     { label: 'Men 1', src: '/avatar/Men-1.png' },
@@ -78,7 +78,7 @@ const AvatarPickerModal = ({ isOpen, onClose, currentAvatar, onSelect }) => {
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="sm:max-w-105 max-h-[90vh] overflow-y-auto">
+            <DialogContent className="sm:max-w-[420px] max-h-[90vh] overflow-y-auto rounded-2xl border-border/60 bg-card/95 backdrop-blur-md shadow-2xl">
                 <DialogHeader>
                     <DialogTitle>Choose Your Avatar</DialogTitle>
                     <DialogDescription>

@@ -1,8 +1,9 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import axios from 'axios';
+import { getPlanMonthlyCredits, getPlanPaidCredits, normalizePlan } from '@/lib/subscriptionPlans';
 
 const UserContext = createContext({});
 const SPECIAL_ACCOUNT_EMAIL = 'arpitariyanm@gmail.com';
@@ -21,6 +22,9 @@ export const useUser = () => {
       refreshUserData: async () => {
         console.warn('refreshUserData called outside UserProvider context');
       },
+      refreshCredits: async () => {
+        console.warn('refreshCredits called outside UserProvider context');
+      },
       consumeCredits: async () => {
         console.warn('consumeCredits called outside UserProvider context');
       },
@@ -29,8 +33,9 @@ export const useUser = () => {
       },
       plan: 'free',
       credits: 0,
+      paidCredits: 0,
       isPro: false,
-      isSpecialAccount: false
+      isSpecialAccount: false,
     };
   }
   return context;
@@ -41,15 +46,18 @@ export const UserProvider = ({ children }) => {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [dbError, setDbError] = useState(false); // true when Supabase is unreachable
+  const [dbError, setDbError] = useState(false); // true when Appwrite is unreachable
 
   const applySpecialAccountOverrides = (email, profile) => {
     if (email !== SPECIAL_ACCOUNT_EMAIL || !profile) return profile;
 
+    const dbPlan = normalizePlan(profile.plan);
+    if (dbPlan === 'max') return profile;
+
     return {
       ...profile,
       plan: 'pro',
-      credits: typeof profile.credits === 'number' ? profile.credits : 25000,
+      credits: typeof profile.credits === 'number' ? profile.credits : getPlanMonthlyCredits('pro'),
     };
   };
 
@@ -63,28 +71,52 @@ export const UserProvider = ({ children }) => {
     try {
       setRefreshing(true);
 
+      const token = await user.getIdToken?.().catch(() => null);
+      if (!token) {
+        setUserData(null);
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
+
       const res = await axios.get('/api/user/profile', {
         params: {
           email: user.email,
           name: user.displayName || getUserNameFromEmail(user.email),
           createIfMissing: true,
         },
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       });
 
       const fetchedUser = res?.data?.user || null;
-      
-      // console.log('=== fetchUserData result ===', {
-      //   mfa_enabled: fetchedUser?.mfa_enabled,
-      //   mfa_email: fetchedUser?.mfa_email,
-      //   updatedAt: fetchedUser?.$updatedAt,
-      //   docId: fetchedUser?.$id
-      // });
-      
-      setUserData(applySpecialAccountOverrides(user.email, fetchedUser));
+      const processed = applySpecialAccountOverrides(user.email, fetchedUser);
+      setUserData(processed);
+      // setUserData triggers React re-renders for all consumers; no extra event needed here.
     } catch (error) {
-      const isTimeout = error?.message?.includes('timeout') || error?.message?.includes('fetch failed');
+      if (error?.response?.status === 401) {
+        // User session invalid or unauthenticated — gracefully reset user data without console error
+        setUserData(null);
+        return;
+      }
+      const axiosMsg = String(error?.message || '').toLowerCase();
+      const apiMsg = String(
+        error?.response?.data?.details || error?.response?.data?.error || ''
+      ).toLowerCase();
+      const isTimeout =
+        axiosMsg.includes('timeout') ||
+        axiosMsg.includes('fetch failed') ||
+        axiosMsg.includes('network error') ||
+        apiMsg.includes('timeout') ||
+        apiMsg.includes('fetch failed') ||
+        apiMsg.includes('network error');
+
       if (isTimeout) setDbError(true);
-      console.error('Error fetching user data:', error?.message || error);
+      console.error(
+        'Error fetching user data:',
+        error?.response?.data?.details || error?.message || error
+      );
       setUserData(null);
     } finally {
       setLoading(false);
@@ -92,20 +124,50 @@ export const UserProvider = ({ children }) => {
     }
   };
 
+  /**
+   * Lightweight credit refresh — only fetches the credit balance via the
+   * dedicated balance endpoint, then patches userData in-place.
+   * Much faster than a full profile refresh; used after every AI request.
+   */
+  const refreshCredits = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const token = await currentUser.getIdToken?.();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await axios.get('/api/credits/balance', { headers });
+      const data = res?.data;
+      if (!data?.success) return;
+
+      const { breakdown } = data;
+      const newCredits = breakdown?.dailyFreeCredits ?? 0;
+      const newPaidCredits = breakdown?.monthlyPaidCredits ?? 0;
+
+      setUserData(prev => {
+        if (!prev) return prev;
+        return { ...prev, credits: newCredits, paid_credits: newPaidCredits };
+      });
+      // NOTE: Do NOT re-dispatch 'creditsUpdated' here — it would create an infinite loop
+      // (creditsUpdated → refreshCredits → creditsUpdated → ...).
+      // State update via setUserData is sufficient for all React consumers.
+    } catch {
+      // Non-fatal — sidebar will update on the next full refresh
+    }
+  }, [currentUser]);
 
   // Update user data
   const updateUserData = async (updates) => {
-    if (!currentUser) return null;
+    const user = currentUser || auth?.currentUser;
+    if (!user) return null;
 
     try {
+      const token = await user.getIdToken?.().catch(() => null);
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const response = await axios.patch('/api/user/profile', {
-        email: currentUser.email,
+        email: user.email,
         updates,
-      });
+      }, { headers });
 
       // Merge existing state + optimistic updates + API response
-      // This ensures if the API response is missing a field like mfa_enabled,
-      // the local state will still optimistically reflect the requested update.
       const merged = {
         ...(userData || {}),
         ...updates,
@@ -113,12 +175,34 @@ export const UserProvider = ({ children }) => {
       };
 
       const updatedUser = applySpecialAccountOverrides(currentUser.email, merged);
-
       setUserData(updatedUser);
+
+      // Notify listeners if credits were part of the update
+      if ('credits' in updates || 'paid_credits' in updates) {
+        window.dispatchEvent(new CustomEvent('creditsUpdated', {
+          detail: {
+            credits: updatedUser?.credits ?? 0,
+            paid_credits: updatedUser?.paid_credits ?? 0,
+            plan: updatedUser?.plan ?? 'free',
+          }
+        }));
+      }
+
       return updatedUser;
     } catch (error) {
       const isNameUpdate = Object.prototype.hasOwnProperty.call(updates || {}, 'name');
-      const isTimeout = error?.message?.includes('timeout') || error?.message?.includes('fetch failed');
+      const axiosMsg = String(error?.message || '').toLowerCase();
+      const apiMsg = String(
+        error?.response?.data?.details || error?.response?.data?.error || ''
+      ).toLowerCase();
+      const isTimeout =
+        axiosMsg.includes('timeout') ||
+        axiosMsg.includes('fetch failed') ||
+        axiosMsg.includes('network error') ||
+        apiMsg.includes('timeout') ||
+        apiMsg.includes('fetch failed') ||
+        apiMsg.includes('network error');
+
       if (isTimeout) {
         console.warn('[UserContext] Appwrite unreachable in updateUserData, applying update locally');
       }
@@ -128,23 +212,26 @@ export const UserProvider = ({ children }) => {
         throw error;
       }
       // Apply update optimistically so the UI stays consistent
-      const updated = applySpecialAccountOverrides(currentUser.email, { ...(userData || {}), ...updates });
+      const updated = applySpecialAccountOverrides(currentUser.email, {
+        ...(userData || {}),
+        ...updates,
+      });
       setUserData(updated);
       return updated;
     }
   };
 
-  // Refresh user data
+  // Refresh user data (full profile)
   const refreshUserData = async () => {
     if (currentUser) {
       await fetchUserData(currentUser);
     }
   };
 
-  // Consume credits
+  // Consume credits (client-side optimistic update + server persistence)
   const consumeCredits = async (amount) => {
     if (!userData) throw new Error('User data not loaded');
-    
+
     if (userData.credits < amount) {
       throw new Error('Insufficient credits');
     }
@@ -153,7 +240,7 @@ export const UserProvider = ({ children }) => {
     return await updateUserData({ credits: newCredits });
   };
 
-  // Check if monthly reset is needed
+  // Check if monthly reset is needed (client-side safety net — server is authoritative)
   const checkMonthlyReset = async () => {
     if (!userData) return;
 
@@ -167,11 +254,20 @@ export const UserProvider = ({ children }) => {
     const daysDiff = Math.floor((now - lastReset) / (1000 * 60 * 60 * 24));
 
     if (daysDiff >= 30) {
-      const resetCredits = userData.plan === 'pro' ? 25000 : 5000;
-      await updateUserData({
-        credits: resetCredits,
-        last_monthly_reset: now.toISOString().split('T')[0]
-      });
+      const normalizedPlan = normalizePlan(userData.plan);
+      // Pro/Max: reset paid_credits. Free: reset daily credits.
+      if (normalizedPlan !== 'free') {
+        const currentPaidCredits = Math.max(0, Number(userData.paid_credits ?? 0));
+        const resetPaidCredits = currentPaidCredits + getPlanPaidCredits(normalizedPlan);
+        await updateUserData({
+          paid_credits: resetPaidCredits,
+          last_monthly_reset: now.toISOString().split('T')[0],
+        });
+      } else {
+        await updateUserData({
+          last_monthly_reset: now.toISOString().split('T')[0],
+        });
+      }
     }
   };
 
@@ -188,11 +284,34 @@ export const UserProvider = ({ children }) => {
     if (userData && !refreshing) {
       checkMonthlyReset();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userData, refreshing]);
 
   // Fetch user data when auth state changes
   useEffect(() => {
     fetchUserData(currentUser);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser]);
+
+  // Listen for 'creditsUpdated' events — refresh credit balance so all
+  // components reading from userData stay in sync.
+  // Debounced to 2 seconds to avoid hammering the balance endpoint.
+  useEffect(() => {
+    let debounceTimer = null;
+    const handleCreditsUpdated = () => {
+      // Use refreshCredits (lightweight) instead of full refreshUserData to avoid
+      // hammering the profile endpoint on every AI request.
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        refreshCredits();
+      }, 2000); // 2-second debounce
+    };
+    window.addEventListener('creditsUpdated', handleCreditsUpdated);
+    return () => {
+      window.removeEventListener('creditsUpdated', handleCreditsUpdated);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
 
   const value = {
@@ -202,29 +321,36 @@ export const UserProvider = ({ children }) => {
     dbError,
     updateUserData,
     refreshUserData,
+    refreshCredits,
     consumeCredits,
     checkMonthlyReset,
     // Computed values for convenience
     plan: userData?.plan || 'free',
-    credits: userData?.credits || 0,
+    // Daily free credits (5,000/day — applies to ALL plans, used for free-tier models only)
+    credits: userData?.credits ?? 0,
+    // Monthly paid credits (Pro: 30,000 | Max: 150,000 — used for paid models only)
+    paidCredits: userData?.paid_credits ?? 0,
     // Check if user is Pro AND subscription hasn't expired
     isPro: (() => {
-      if (userData?.plan !== 'pro') return false;
-      
+      const normalizedPlan = normalizePlan(userData?.plan);
+      if (!['pro', 'max'].includes(normalizedPlan)) return false;
+
       // Special account check - always Pro
       if (currentUser?.email === SPECIAL_ACCOUNT_EMAIL) return true;
-      
+
       // Check subscription expiry
       if (userData?.subscription_end_date) {
         const endDate = new Date(userData.subscription_end_date);
         const now = new Date();
         return endDate > now; // Pro only if subscription hasn't expired
       }
-      
-      // If no end date but plan is pro, consider it active (for backwards compatibility)
+
+      // If no end date but plan is pro/max, consider it active (manual/permanent upgrade)
       return true;
     })(),
-    isSpecialAccount: currentUser?.email === SPECIAL_ACCOUNT_EMAIL
+    isMax: normalizePlan(userData?.plan) === 'max',
+    isSpecialAccount: currentUser?.email === SPECIAL_ACCOUNT_EMAIL,
+    memoryEnabled: userData?.memory_enabled !== false, // Default to true if not set
   };
 
   return (
